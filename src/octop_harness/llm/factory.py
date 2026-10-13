@@ -413,6 +413,44 @@ def _attach_reasoning_to_payload(payload: dict[str, Any], source_messages: list[
     return payload
 
 
+def _adapt_codex_instructions(payload: dict[str, Any], source_messages: list[Any]) -> None:
+    """Extract the leading system prompt; retain later instructions in place.
+
+    Explicit instructions (including an empty value) take precedence over
+    extraction. Inspect the source role because the SDK may already have
+    converted system to developer for some models. Only flatten text blocks;
+    preserve structured content as a developer message rather than losing it.
+    """
+    from langchain_core.messages import SystemMessage
+
+    items = payload["input"]
+    extra_body = payload.get("extra_body")
+    explicit = "instructions" in payload or (isinstance(extra_body, dict) and "instructions" in extra_body)
+    if not explicit and source_messages and isinstance(source_messages[0], SystemMessage) and items:
+        source = source_messages[0]
+        first = items[0]
+        if source.additional_kwargs.get("__openai_role__", "system") == "system" and first.get("role") in (
+            "system",
+            "developer",
+        ):
+            content = first.get("content")
+            instructions = content if isinstance(content, str) else None
+            if isinstance(content, list) and all(
+                isinstance(block, dict)
+                and block.get("type") in ("text", "input_text")
+                and isinstance(block.get("text"), str)
+                for block in content
+            ):
+                instructions = "\n\n".join(block["text"] for block in content)
+            if instructions is not None:
+                payload["instructions"] = instructions
+                items = items[1:]
+    payload["input"] = [
+        {**item, "role": "developer"} if isinstance(item, dict) and item.get("role") == "system" else item
+        for item in items
+    ]
+
+
 def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
     """Return a ``ChatOpenAI`` subclass that round-trips ``reasoning_content``.
 
@@ -457,12 +495,8 @@ def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
             input_ = _sanitize_input_messages(input_)
             payload: dict[str, Any] = super()._get_request_payload(input_, stop=stop, **kwargs)
             if getattr(self, "_harness_codex", False):
-                # Codex rejects explicit system messages. Change the wire role
-                # only; preserve instruction order/content and shared history.
-                payload["input"] = [
-                    {**item, "role": "developer"} if isinstance(item, dict) and item.get("role") == "system" else item
-                    for item in payload["input"]
-                ]
+                source_messages = _source_messages_for_payload(input_, kwargs, self._convert_input)
+                _adapt_codex_instructions(payload, source_messages)
             messages_out = payload.get("messages")
             if not isinstance(messages_out, list):
                 return payload

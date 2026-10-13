@@ -377,13 +377,11 @@ class TestCodexResponses:
         payload = self._build()._get_request_payload(history)
         assert "previous_response_id" not in payload
         items = payload["input"]
-        assert [item["role"] for item in items if "role" in item] == [
-            "developer",
-            "user",
-            "developer",
-            "user",
-        ]
-        assert items[0]["content"] == "Be concise."
+        assert payload["instructions"] == "Be concise."
+        assert [item["role"] for item in items if "role" in item] == ["user", "developer", "user"]
+        assert next(item for item in items if item.get("role") == "developer")["content"] == (
+            "Keep the original instructions."
+        )
         call = next(item for item in items if item.get("type") == "function_call")
         result = next(item for item in items if item.get("type") == "function_call_output")
         assert call["call_id"] == result["call_id"] == "call_echo"
@@ -391,6 +389,59 @@ class TestCodexResponses:
         reasoning = next(item for item in items if item.get("type") == "reasoning")
         assert reasoning["encrypted_content"] == "opaque-test-reasoning"
         assert history == before
+
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("  Be concise.\n", "  Be concise.\n"),
+            (
+                [{"type": "text", "text": "Base rules."}, {"type": "text", "text": "Runtime rules."}],
+                "Base rules.\n\nRuntime rules.",
+            ),
+        ],
+    )
+    def test_main_system_prompt_becomes_instructions(self, content: Any, expected: str) -> None:
+        from copy import deepcopy
+
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        history = [SystemMessage(content=content), HumanMessage(content="ping")]
+        before = deepcopy(history)
+        payload = self._build()._get_request_payload(history)
+        assert payload["instructions"] == expected
+        assert [item["role"] for item in payload["input"]] == ["user"]
+        assert history == before
+
+    @pytest.mark.parametrize("explicit", ["Caller rules.", "", None])
+    @pytest.mark.parametrize("via_extra_body", [False, True])
+    def test_explicit_instructions_leave_system_messages_in_input(self, explicit: Any, via_extra_body: bool) -> None:
+        options = {"instructions": explicit}
+        if via_extra_body:
+            options = {"extra_body": options}
+        payload = self._build()._get_request_payload(
+            [("system", "Main rules."), ("human", "ping"), ("system", "Later rules.")], **options
+        )
+        target = payload["extra_body"] if via_extra_body else payload
+        assert "instructions" in target
+        assert target["instructions"] == explicit
+        if via_extra_body:
+            assert "instructions" not in payload
+        assert [item["role"] for item in payload["input"]] == ["developer", "user", "developer"]
+        assert payload["input"][0]["content"] == "Main rules."
+        assert payload["input"][2]["content"] == "Later rules."
+
+    @pytest.mark.parametrize(
+        "history, roles",
+        [
+            ([("human", "ping")], ["user"]),
+            ([("developer", "Developer rules."), ("human", "ping")], ["developer", "user"]),
+            ([("human", "ping"), ("system", "Later rules.")], ["user", "developer"]),
+        ],
+    )
+    def test_no_main_system_prompt_keeps_message_roles(self, history: Any, roles: list[str]) -> None:
+        payload = self._build()._get_request_payload(history)
+        assert "instructions" not in payload
+        assert [item["role"] for item in payload["input"]] == roles
 
     @pytest.mark.parametrize(
         "base_url",
@@ -411,7 +462,8 @@ class TestCodexResponses:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["ainvoke", "astream"])
-    async def test_http_request_and_sse_response(self, mode: str) -> None:
+    @pytest.mark.parametrize("bound_instructions", [False, True])
+    async def test_http_request_and_sse_response(self, mode: str, bound_instructions: bool) -> None:
         import json
 
         import httpx
@@ -427,7 +479,13 @@ class TestCodexResponses:
             assert request.headers["chatgpt-account-id"] == "test-account"
             assert body["store"] is False
             assert body["stream"] is True
-            assert body["input"][0]["role"] == "developer"
+            if bound_instructions:
+                assert body["instructions"] == "Caller rules."
+                assert body["input"][0]["role"] == "developer"
+                assert body["input"][0]["content"] == "Be concise."
+            else:
+                assert body["instructions"] == "Be concise."
+                assert body["input"][0]["role"] == "user"
             assert "reasoning.encrypted_content" in body["include"]
             events = [
                 {
@@ -464,11 +522,12 @@ class TestCodexResponses:
                 http_client=http,
             )
             messages = [("system", "Be concise."), ("human", "ping")]
+            chat = instance.bind(instructions="Caller rules.") if bound_instructions else instance
             if mode == "ainvoke":
-                result = await instance.ainvoke(messages)
+                result = await chat.ainvoke(messages)
                 assert result.text == "OK"
             else:
-                chunks = [chunk async for chunk in instance.astream(messages)]
+                chunks = [chunk async for chunk in chat.astream(messages)]
                 assert "".join(chunk.text for chunk in chunks) == "OK"
         assert len(requests) == 1
 
