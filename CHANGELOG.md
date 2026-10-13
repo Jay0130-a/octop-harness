@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 新增
+
+- 记忆辅助调用可配置客户端兜底 `memory_aux_max_tokens`（提炼预算仍走 `memory_extract_max_tokens`），以及 OpenAI 兼容端点的 `memory_aux_extra_body`。显式 `extra_body` 覆盖 `memory_aux_thinking` 生成的同名键。
+- OpenAI 兼容模型支持按模型选择 Chat Completions 或 Responses API，并可显式开启受限的 Responses → Chat Completions 回退。
+
 ### 修复
 
 - ChatGPT Codex 端点使用无状态流式 Responses 请求，将主系统提示词映射到 instructions，后续系统消息保留为 developer；显式 instructions 原样保留，并保留多轮工具历史；将 langchain-openai 最低版本提高至 1.3.3，避免无状态历史引用未存储条目。
