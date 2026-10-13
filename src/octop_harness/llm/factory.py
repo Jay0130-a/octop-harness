@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from octop_harness.config import ModelConfig, ProviderConfig
 from octop_harness.llm.session_header import (
@@ -247,6 +248,16 @@ def build_chat_model(provider: ProviderConfig, model: ModelConfig) -> BaseChatMo
 # ---------------------------------------------------------------------------
 
 
+def _is_codex_base_url(base_url: str | None) -> bool:
+    """Match the ChatGPT Codex endpoint, without affecting API-key providers."""
+    endpoint = urlsplit(base_url or "")
+    return (
+        endpoint.scheme == "https"
+        and endpoint.hostname == "chatgpt.com"
+        and endpoint.path.rstrip("/") == "/backend-api/codex"
+    )
+
+
 def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
     try:
         from langchain_openai import ChatOpenAI
@@ -272,6 +283,18 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         # that do not explicitly advertise it.
         kwargs["use_responses_api"] = True
         kwargs["output_version"] = "responses/v1"
+    is_codex = _is_codex_base_url(provider.base_url)
+    if is_codex:
+        # ChatGPT plan tokens require stateless, streaming Responses requests.
+        # Keep the complete history, including encrypted reasoning for replay.
+        kwargs.update(
+            use_responses_api=True,
+            store=False,
+            streaming=True,
+            use_previous_response_id=False,
+            output_version="responses/v1",
+            include=["reasoning.encrypted_content"],
+        )
     if provider.headers:
         kwargs["default_headers"] = dict(provider.headers)
     session_clients = None
@@ -281,6 +304,7 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         session_clients = session_http_clients(provider.session_header)
         kwargs["http_client"], kwargs["http_async_client"] = session_clients
     instance: BaseChatModel = cls(**kwargs)
+    instance._harness_codex = is_codex  # type: ignore[attr-defined]
     if session_clients is not None:
         attach_session_http_clients(instance, session_clients[0], session_clients[1])
     # Attach supported input modalities so the subclass can strip
@@ -432,6 +456,13 @@ def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
         def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
             input_ = _sanitize_input_messages(input_)
             payload: dict[str, Any] = super()._get_request_payload(input_, stop=stop, **kwargs)
+            if getattr(self, "_harness_codex", False):
+                # Codex rejects explicit system messages. Change the wire role
+                # only; preserve instruction order/content and shared history.
+                payload["input"] = [
+                    {**item, "role": "developer"} if isinstance(item, dict) and item.get("role") == "system" else item
+                    for item in payload["input"]
+                ]
             messages_out = payload.get("messages")
             if not isinstance(messages_out, list):
                 return payload
