@@ -32,6 +32,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from octop_harness.config import ModelConfig, ProviderConfig
 from octop_harness.llm.session_header import (
@@ -252,6 +253,16 @@ def build_chat_model(provider: ProviderConfig, model: ModelConfig) -> BaseChatMo
 # ---------------------------------------------------------------------------
 
 
+def _is_codex_base_url(base_url: str | None) -> bool:
+    """Match the ChatGPT Codex endpoint, without affecting API-key providers."""
+    endpoint = urlsplit(base_url or "")
+    return (
+        endpoint.scheme == "https"
+        and endpoint.hostname == "chatgpt.com"
+        and endpoint.path.rstrip("/") == "/backend-api/codex"
+    )
+
+
 def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
     try:
         from langchain_openai import ChatOpenAI
@@ -271,12 +282,24 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         # off and streamed AIMessages carry no usage_metadata.
         "stream_usage": provider.stream_usage,
     }
-    use_responses_api = model.api_mode == "responses"
+    is_codex = _is_codex_base_url(provider.base_url)
+    use_responses_api = is_codex or model.api_mode == "responses"
     if model.native_tool_search and not use_responses_api:
         raise ValueError("OpenAI native_tool_search requires api_mode='responses'")
     kwargs["use_responses_api"] = use_responses_api
     if use_responses_api:
         kwargs["output_version"] = "responses/v1"
+    if is_codex:
+        # ChatGPT plan tokens require stateless, streaming Responses requests.
+        # Keep the complete history, including encrypted reasoning for replay.
+        kwargs.update(
+            use_responses_api=True,
+            store=False,
+            streaming=True,
+            use_previous_response_id=False,
+            output_version="responses/v1",
+            include=["reasoning.encrypted_content"],
+        )
     if provider.headers:
         kwargs["default_headers"] = dict(provider.headers)
     session_clients = None
@@ -286,8 +309,11 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         session_clients = session_http_clients(provider.session_header)
         kwargs["http_client"], kwargs["http_async_client"] = session_clients
     instance: BaseChatModel = cls(**kwargs)
+    instance._harness_codex = is_codex  # type: ignore[attr-defined]
+
     fallback_instance: BaseChatModel | None = None
-    if model.api_fallback == "chat_completions":
+    # Codex is Responses-only; never retry it through Chat Completions.
+    if model.api_fallback == "chat_completions" and not is_codex:
         fallback_kwargs = dict(kwargs)
         fallback_kwargs["use_responses_api"] = False
         fallback_kwargs.pop("output_version", None)
@@ -488,6 +514,44 @@ def _attach_reasoning_to_payload(payload: dict[str, Any], source_messages: list[
     return payload
 
 
+def _adapt_codex_instructions(payload: dict[str, Any], source_messages: list[Any]) -> None:
+    """Extract the leading system prompt; retain later instructions in place.
+
+    Explicit instructions (including an empty value) take precedence over
+    extraction. Inspect the source role because the SDK may already have
+    converted system to developer for some models. Only flatten text blocks;
+    preserve structured content as a developer message rather than losing it.
+    """
+    from langchain_core.messages import SystemMessage
+
+    items = payload["input"]
+    extra_body = payload.get("extra_body")
+    explicit = "instructions" in payload or (isinstance(extra_body, dict) and "instructions" in extra_body)
+    if not explicit and source_messages and isinstance(source_messages[0], SystemMessage) and items:
+        source = source_messages[0]
+        first = items[0]
+        if source.additional_kwargs.get("__openai_role__", "system") == "system" and first.get("role") in (
+            "system",
+            "developer",
+        ):
+            content = first.get("content")
+            instructions = content if isinstance(content, str) else None
+            if isinstance(content, list) and all(
+                isinstance(block, dict)
+                and block.get("type") in ("text", "input_text")
+                and isinstance(block.get("text"), str)
+                for block in content
+            ):
+                instructions = "\n\n".join(block["text"] for block in content)
+            if instructions is not None:
+                payload["instructions"] = instructions
+                items = items[1:]
+    payload["input"] = [
+        {**item, "role": "developer"} if isinstance(item, dict) and item.get("role") == "system" else item
+        for item in items
+    ]
+
+
 def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
     """Return a ``ChatOpenAI`` subclass that round-trips ``reasoning_content``.
 
@@ -575,6 +639,9 @@ def _get_reasoning_aware_chat_openai(base_cls: type[Any]) -> type[Any]:
         def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
             input_ = _sanitize_input_messages(input_)
             payload: dict[str, Any] = super()._get_request_payload(input_, stop=stop, **kwargs)
+            if getattr(self, "_harness_codex", False):
+                source_messages = _source_messages_for_payload(input_, kwargs, self._convert_input)
+                _adapt_codex_instructions(payload, source_messages)
             messages_out = payload.get("messages")
             if not isinstance(messages_out, list):
                 return payload
