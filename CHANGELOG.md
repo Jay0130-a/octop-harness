@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-14
+
 ### 新增
 
 - `MemoryMiddleware.pause_background` 支持宿主按专家暂停并排空后台记忆任务，供备份恢复使用。
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 修复
 
 - ChatGPT Codex 端点使用无状态流式 Responses 请求，将主系统提示词映射到 instructions，后续系统消息保留为 developer；显式 instructions 原样保留，并保留多轮工具历史；将 langchain-openai 最低版本提高至 1.3.3，避免无状态历史引用未存储条目。
+- 减少启动和对话过程中的重复诊断日志，保留需要关注的错误与告警。
 
 ## [1.0.2] - 2026-10-09
 
