@@ -466,18 +466,14 @@ class HarnessAgentManager:
             return
         factory = self._shared_factory
         factory._providers[provider.id] = provider
-        stale = [k for k in factory._cache if k.startswith(f"{provider.id}/")]
-        for k in stale:
-            factory.pop_cached(k)
+        factory.clear_provider_cache(provider.id)
 
     def remove_provider(self, provider_id: str) -> None:
         if self._shared_factory is None:
             return
         factory = self._shared_factory
         factory._providers.pop(provider_id, None)
-        stale = [k for k in factory._cache if k.startswith(f"{provider_id}/")]
-        for k in stale:
-            factory.pop_cached(k)
+        factory.clear_provider_cache(provider_id)
 
     def list_provider_templates(
         self,
