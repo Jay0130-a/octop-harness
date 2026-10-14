@@ -838,8 +838,8 @@ class HarnessAgentConfig:
     memory_aux_light_timeout_s: float | None = None
     memory_aux_heavy_timeout_s: float | None = None
     # Depth-thinking on OpenAI-compatible aux calls. ``auto`` turns it off
-    # for model ids that default to a reasoning chain (Qwen3, QwQ,
-    # DeepSeek-R, reasoner). ``off`` always sends ``enable_thinking=false``.
+    # for known Qwen3/QwQ chat-template models. ``off`` requests the same
+    # supported switch; unknown models keep their own defaults.
     # ``on`` leaves the server default. Main-chat thinking settings are not
     # reused here.
     memory_aux_thinking: Literal["auto", "off", "on"] = "auto"
@@ -848,10 +848,15 @@ class HarnessAgentConfig:
     # it always sends a budget, overridden only by
     # ``memory_extract_max_tokens``. ``None`` adds no client-side cap.
     memory_aux_max_tokens: int | None = None
-    # Extra OpenAI-compatible request fields merged onto every aux call
+    # Extra OpenAI-compatible request fields for the first selected model only
     # (for example ``reasoning_effort``). Merged after the thinking switch,
     # so these top-level keys win. Bound only for langchain-openai models.
     memory_aux_extra_body: dict[str, Any] | None = None
+    # Retries after the first request, per candidate model. Memory owns the
+    # retry loop; dedicated SDK clients have their implicit retries disabled.
+    memory_aux_max_retries: int = 2
+    # Exponential delay: base * 2**attempt, capped at 60 seconds.
+    memory_aux_retry_backoff_s: float = 1.0
 
     # ------------------------------------------------------------------
     # Validation
@@ -900,6 +905,12 @@ class HarnessAgentConfig:
             raise ValueError(
                 f"memory_aux_thinking must be 'auto', 'off', or 'on', got {self.memory_aux_thinking!r}",
             )
+        retries = self.memory_aux_max_retries
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 10:
+            raise ValueError("memory_aux_max_retries must be an integer from 0 to 10")
+        backoff = self.memory_aux_retry_backoff_s
+        if isinstance(backoff, bool) or not isinstance(backoff, int | float) or not 0 <= backoff <= 60:
+            raise ValueError("memory_aux_retry_backoff_s must be between 0 and 60 seconds")
         _validate_extract_max_tokens(self.memory_extract_max_tokens)
         _validate_aux_timeout("memory_aux_light_timeout_s", self.memory_aux_light_timeout_s)
         _validate_aux_timeout("memory_aux_heavy_timeout_s", self.memory_aux_heavy_timeout_s)
@@ -1109,6 +1120,8 @@ class HarnessAgentConfig:
             "memory_aux_light_timeout_s": self.memory_aux_light_timeout_s,
             "memory_aux_heavy_timeout_s": self.memory_aux_heavy_timeout_s,
             "memory_aux_thinking": self.memory_aux_thinking,
+            "memory_aux_max_retries": self.memory_aux_max_retries,
+            "memory_aux_retry_backoff_s": self.memory_aux_retry_backoff_s,
             "memory_aux_max_tokens": self.memory_aux_max_tokens,
             "memory_aux_extra_body": (
                 dict(self.memory_aux_extra_body) if self.memory_aux_extra_body is not None else None

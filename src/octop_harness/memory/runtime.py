@@ -268,6 +268,8 @@ class MemoryRuntime:
                 default_max_tokens=cfg.memory_aux_max_tokens,
                 extra_body=cfg.memory_aux_extra_body,
                 thinking=cfg.memory_aux_thinking,
+                max_retries=cfg.memory_aux_max_retries,
+                retry_backoff_s=cfg.memory_aux_retry_backoff_s,
             )
         except (ValueError, TypeError):  # pragma: no cover - defensive
             logger.warning(

@@ -26,7 +26,8 @@ import os
 import threading
 import time
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -207,6 +208,10 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
         self._maintenance_interval_seconds = maintenance_interval_seconds
         self._maintenance_initial_delay_seconds = maintenance_initial_delay_seconds
         self._lock = threading.Lock()
+        self._background_condition = threading.Condition()
+        self._background_active = 0
+        self._background_paused = False
+        self._background_shutdown = False
         # Per-session idle timers for the extract watchdog. Each captured turn
         # re-arms its session's timer; on expiry we fire ``end_session`` so
         # promotion to atoms runs after a quiet period without a host signal.
@@ -451,10 +456,7 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
                 with self._sessions_lock:
                     self._session_threads.pop(session_id, None)
 
-        if background:
-            _bg_pool().submit(_run, label="extract")
-        else:
-            _run()
+        self._submit_background(_run, label="extract", background=background)
 
     # ------------------------------------------------------------------
     # Read-path helper (recall injection)
@@ -519,7 +521,7 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
                 user_id=user_id,
             )
 
-        _bg_pool().submit(_run, label="capture")
+        self._submit_background(_run, label="capture")
 
     def _remember_chat_model(self, configurable: dict[str, Any]) -> None:
         """Tell the extract LLM client which model just served this turn."""
@@ -642,6 +644,8 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
 
     def shutdown(self) -> None:
         """Cancel all background timers. Safe to call multiple times."""
+        with self._background_condition:
+            self._background_shutdown = True
         self._stop_interval_timer()
         self._stop_maintenance_timer()
         with self._idle_lock:
@@ -649,6 +653,52 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
             self._idle_timers.clear()
         for timer in timers:
             timer.cancel()
+
+    def _submit_background(self, fn: Callable[[], None], *, label: str, background: bool = True) -> None:
+        with self._background_condition:
+            if self._background_paused or self._background_shutdown:
+                return
+            self._background_active += 1
+
+        def run() -> None:
+            try:
+                fn()
+            finally:
+                with self._background_condition:
+                    self._background_active -= 1
+                    self._background_condition.notify_all()
+
+        if background:
+            try:
+                _bg_pool().submit(run, label=label)
+            except Exception:
+                with self._background_condition:
+                    self._background_active -= 1
+                    self._background_condition.notify_all()
+                raise
+        else:
+            run()
+
+    @contextmanager
+    def pause_background(self, *, timeout: float = 120) -> Iterator[None]:
+        """Drain this expert's memory workers for a host-owned restore.
+
+        The host must separately stop graph admission. New background work is
+        skipped while paused; timeout restores normal admission without closing
+        resources still in use. Other middleware instances remain independent.
+        """
+        with self._background_condition:
+            if self._background_paused:
+                raise RuntimeError("Memory background work is already paused")
+            self._background_paused = True
+        try:
+            with self._background_condition:
+                if not self._background_condition.wait_for(lambda: self._background_active == 0, timeout=timeout):
+                    raise TimeoutError("Memory background work did not become idle")
+            yield
+        finally:
+            with self._background_condition:
+                self._background_paused = False
 
     def maintenance_status(self) -> dict[str, Any]:
         """Snapshot of the current slimming phase for host status APIs."""
@@ -714,7 +764,7 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
         def _run() -> None:
             self._run_maintenance_tick(service)
 
-        _bg_pool().submit(_run, label="maintenance")
+        self._submit_background(_run, label="maintenance")
 
     @staticmethod
     def _run_reclaim_pass(memory: Any, *, run_gc: Any, nudge_vacuum: Any) -> None:

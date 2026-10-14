@@ -28,9 +28,11 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
+import httpx
 from octop_memory.ports.llm import LLMClientError, LLMTier
 
 from octop_harness.llm.invoke_helpers import bind_call_options, build_text_messages, stringify_content
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Model ids that start a reasoning chain unless the request turns it off.
 # Matched against the model id (the part after the last "/"), not the provider.
 _REASONING_MODEL_RE = re.compile(
-    r"(qwen3|qwen-3|qwq|deepseek-r\d|reasoner|(?:^|[^a-z])thinking(?:[^a-z]|$))",
+    r"(qwen3|qwen-3|qwq)",
     re.IGNORECASE,
 )
 ThinkingMode = Literal["auto", "off", "on"]
@@ -67,11 +69,15 @@ class HarnessAgentLLMClient:
             pass its own ``max_tokens``; ``None`` adds no client-side cap.
             Extraction always sends a budget, so this does not override
             ``memory_extract_max_tokens``.
-        extra_body: Vendor request extras merged onto every call after the
+        extra_body: Vendor request extras merged onto primary-model calls after the
             thinking switch. Matching top-level keys from here win.
-            ``None`` or empty adds nothing.
-        thinking: ``auto`` disables depth-thinking for known reasoning model
-            ids; ``off`` disables it for every OpenAI-compatible model;
+            ``None`` or empty adds nothing. Extras apply only to the first
+            selected model; fallback models receive their own derived options.
+        max_retries: Extra attempts per model for timeout/network/408/409/429/5xx
+            failures. SDK retries are disabled on isolated model instances.
+        retry_backoff_s: Exponential retry delay, capped at 60 seconds.
+        thinking: ``auto`` / ``off`` disable thinking for known Qwen3/QwQ
+            chat-template models. Unknown models keep their own defaults;
             ``on`` leaves the server default. Main-chat thinking settings
             are not applied to this client.
     """
@@ -95,12 +101,24 @@ class HarnessAgentLLMClient:
         default_max_tokens: int | None = None,
         extra_body: Mapping[str, object] | None = None,
         thinking: ThinkingMode = "auto",
+        max_retries: int = 2,
+        retry_backoff_s: float = 1.0,
     ) -> None:
         configured = _first_ref(aux_model, light_model, heavy_model)
         if configured is None and default_model is None:
             raise ValueError(
                 "HarnessAgentLLMClient requires aux_model or default_model",
             )
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 10:
+            raise ValueError("max_retries must be an integer from 0 to 10")
+        if (
+            isinstance(retry_backoff_s, bool)
+            or not isinstance(retry_backoff_s, int | float)
+            or not 0 <= retry_backoff_s <= 60
+        ):
+            raise ValueError("retry_backoff_s must be between 0 and 60 seconds")
+        self._max_retries = max_retries
+        self._retry_backoff_s = retry_backoff_s
         self._factory = factory
         self._aux_model = configured
         self._default_model = default_model
@@ -152,6 +170,7 @@ class HarnessAgentLLMClient:
                     max_tokens=effective_max_tokens,
                     temperature=temperature,
                     response_format=response_format,
+                    extra_body=self._extra_body if index == 0 else None,
                 )
             except Exception as exc:  # provider error types vary; try the next ref; pylint: disable=broad-except
                 last_exc = exc
@@ -202,44 +221,60 @@ class HarnessAgentLLMClient:
         max_tokens: int | None,
         temperature: float | None,
         response_format: Literal["text", "json"],
+        extra_body: Mapping[str, object] | None,
     ) -> str:
         try:
-            model = self._factory.get_chat_model(ref)
+            model = self._factory.get_chat_model(ref, max_retries=0)
         except Exception as exc:
             detail = str(exc).strip() or type(exc).__name__
             raise LLMClientError(
                 f"failed to build chat model {ref!r} for tier={tier!r}: {detail}",
             ) from exc
 
+        output_limit = getattr(model, "_harness_max_output_tokens", None)
+        if max_tokens is not None and isinstance(output_limit, int) and output_limit > 0:
+            max_tokens = min(max_tokens, output_limit)
         bound_model = bind_call_options(
             model,
             max_tokens=max_tokens,
             temperature=temperature,
             response_format=response_format,
             timeout_s=self._light_timeout_s if tier == "light" else self._heavy_timeout_s,
-            extra_body=_aux_extra_body(ref, self._thinking, self._extra_body),
+            extra_body=_aux_extra_body(ref, self._thinking, extra_body),
         )
         messages = build_text_messages(prompt, system=system)
 
-        try:
-            response = bound_model.invoke(messages)
-        except Exception as exc:
-            # Provider 400s (expired subscription, bad request) are not
-            # always RuntimeError/OSError subclasses. Treat every model
-            # failure as degrade-able so extract never kills the user turn.
-            logger.info(
-                "HarnessAgentLLMClient.call_llm failed (model=%s, tier=%s): %r (%s)",
-                ref,
-                tier,
-                exc,
-                type(exc).__name__,
-            )
-            detail = str(exc).strip() or type(exc).__name__
-            raise LLMClientError(
-                f"chat model {ref!r} failed for tier={tier!r}: {detail}",
-            ) from exc
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = bound_model.invoke(messages)
+                return stringify_content(response.content)
+            except Exception as exc:
+                if attempt < self._max_retries and _is_transient(exc):
+                    delay = min(60.0, self._retry_backoff_s * 2**attempt)
+                    logger.info(
+                        "Memory LLM retry model=%s attempt=%s delay=%ss: %s",
+                        ref,
+                        attempt + 1,
+                        delay,
+                        type(exc).__name__,
+                    )
+                    time.sleep(delay)
+                    continue
+                detail = str(exc).strip() or type(exc).__name__
+                raise LLMClientError(
+                    f"chat model {ref!r} failed for tier={tier!r}: {type(exc).__name__}: {detail}",
+                ) from exc
+        raise AssertionError("unreachable")
 
-        return stringify_content(response.content)
+
+def _is_transient(exc: BaseException) -> bool:
+    """Retry transport failures and transient HTTP errors, never arbitrary 400s."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in (408, 409, 429) or 500 <= status < 600
+    if isinstance(exc, (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    return exc.__cause__ is not None and _is_transient(exc.__cause__)
 
 
 def _aux_extra_body(
@@ -267,10 +302,9 @@ def _disable_thinking_extra_body(ref: str, mode: ThinkingMode) -> dict[str, Any]
     """
     if mode == "on":
         return None
-    if mode == "auto":
-        model_id = ref.rsplit("/", 1)[-1]
-        if _REASONING_MODEL_RE.search(model_id) is None:
-            return None
+    model_id = ref.rsplit("/", 1)[-1]
+    if _REASONING_MODEL_RE.search(model_id) is None:
+        return None
     return {"chat_template_kwargs": {"enable_thinking": False}}
 
 
