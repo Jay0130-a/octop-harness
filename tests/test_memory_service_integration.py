@@ -104,7 +104,7 @@ class _Factory:
         self.refs.append(ref)
         return self.model
 
-    def get_chat_model(self, ref: str) -> _FakeModel:
+    def get_chat_model(self, ref: str, *, max_retries: int | None = None) -> _FakeModel:
         return self.get(ref)
 
 
@@ -120,7 +120,7 @@ class _MapFactory:
             raise model
         return model
 
-    def get_chat_model(self, ref: str) -> _FakeModel:
+    def get_chat_model(self, ref: str, *, max_retries: int | None = None) -> _FakeModel:
         return self.get(ref)
 
 
@@ -310,11 +310,11 @@ class TestHarnessAgentLLMClient:
         HarnessAgentLLMClient(_Factory(plain), default_model="openai/gpt-4.1").call_llm("x")
         assert "extra_body" not in plain.bind_calls[-1]
 
-    def test_thinking_off_binds_for_every_openai_model(self) -> None:
+    def test_thinking_off_binds_for_supported_model(self) -> None:
         model = _FakeOpenAIModel()
         client = HarnessAgentLLMClient(
             _Factory(model),
-            default_model="openai/gpt-4.1",
+            default_model="local/Qwen3",
             light_timeout_s=45,
             heavy_timeout_s=90,
             thinking="off",

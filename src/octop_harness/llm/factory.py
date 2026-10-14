@@ -78,7 +78,7 @@ class ChatModelFactory:
     ) -> None:
         # Build id→ProviderConfig index for O(1) lookups in get().
         self._providers: dict[str, ProviderConfig] = {p.id: p for p in providers}
-        self._cache: dict[str, BaseChatModel] = {}
+        self._cache: dict[str | tuple[str, int], BaseChatModel] = {}
         self._agent_config = agent_config
         self._get_protocol = get_protocol
 
@@ -189,9 +189,18 @@ class ChatModelFactory:
         ref = self.resolve_ref(spec, messages=messages, configurable=configurable)
         return self.get(ref, get_protocol=get_protocol)
 
-    def get_chat_model(self, model_ref: str) -> BaseChatModel:
-        """Return the cached ``BaseChatModel`` (legacy escape hatch)."""
-        cached = self._cache.get(model_ref)
+    def get_chat_model(self, model_ref: str, *, max_retries: int | None = None) -> BaseChatModel:
+        """Return a cached model, optionally with an isolated SDK retry policy.
+
+        Memory uses ``max_retries=0`` and owns retries itself. These instances
+        never replace or mutate the model used by the main conversation.
+        """
+        if max_retries is not None and (
+            isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0
+        ):
+            raise ValueError("max_retries must be a non-negative integer or None")
+        cache_key = model_ref if max_retries is None else (model_ref, max_retries)
+        cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
         provider_key, _, model_id = model_ref.partition("/")
@@ -201,15 +210,22 @@ class ChatModelFactory:
         model = provider.get_model(model_id)
         if model is None or not model.enabled:
             raise ValueError(f"Model {model_ref!r} not found or disabled")
-        instance = self._build(provider, model)
-        self._cache[model_ref] = instance
+        instance = self._build(provider, model, max_retries=max_retries)
+        self._cache[cache_key] = instance
         return instance
 
     def pop_cached(self, model_ref: str) -> None:
         """Drop a cached model and close any dedicated session-header clients."""
-        instance = self._cache.pop(model_ref, None)
-        if instance is not None:
-            close_session_http_clients(instance)
+        for key in list(self._cache):
+            if key == model_ref or (isinstance(key, tuple) and key[0] == model_ref):
+                close_session_http_clients(self._cache.pop(key))
+
+    def clear_provider_cache(self, provider_id: str) -> None:
+        """Evict all models for a provider, including isolated retry variants."""
+        refs = {key[0] if isinstance(key, tuple) else key for key in self._cache}
+        for ref in refs:
+            if ref.startswith(f"{provider_id}/"):
+                self.pop_cached(ref)
 
     def close(self) -> None:
         """Close dedicated session-header clients and drop the model cache."""
@@ -227,13 +243,13 @@ class ChatModelFactory:
     # Construction by protocol
     # ------------------------------------------------------------------
 
-    def _build(self, provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
+    def _build(self, provider: ProviderConfig, model: ModelConfig, *, max_retries: int | None = None) -> BaseChatModel:
         if provider.protocol == "openai":
-            return _build_openai(provider, model)
+            return _build_openai(provider, model, max_retries=max_retries)
         if provider.protocol == "anthropic":
-            return _build_anthropic(provider, model)
+            return _build_anthropic(provider, model, max_retries=max_retries)
         if provider.protocol == "bedrock":
-            return _build_bedrock(provider, model)
+            return _build_bedrock(provider, model, max_retries=max_retries)
         raise ValueError(f"Unsupported provider protocol: {provider.protocol!r}")
 
 
@@ -263,7 +279,7 @@ def _is_codex_base_url(base_url: str | None) -> bool:
     )
 
 
-def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
+def _build_openai(provider: ProviderConfig, model: ModelConfig, *, max_retries: int | None = None) -> BaseChatModel:
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as exc:  # pragma: no cover - covered by install path
@@ -282,6 +298,8 @@ def _build_openai(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel
         # off and streamed AIMessages carry no usage_metadata.
         "stream_usage": provider.stream_usage,
     }
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
     is_codex = _is_codex_base_url(provider.base_url)
     use_responses_api = is_codex or model.api_mode == "responses"
     if model.native_tool_search and not use_responses_api:
@@ -842,7 +860,7 @@ def _stamp_native_tool_search_capability(
         object.__setattr__(instance, "_harness_tool_search_provider", provider)
 
 
-def _build_anthropic(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
+def _build_anthropic(provider: ProviderConfig, model: ModelConfig, *, max_retries: int | None = None) -> BaseChatModel:
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as exc:  # pragma: no cover
@@ -854,6 +872,8 @@ def _build_anthropic(provider: ProviderConfig, model: ModelConfig) -> BaseChatMo
         "model": model.id,
         "api_key": provider.api_key,
     }
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
     # ChatAnthropic accepts ``base_url`` for proxy/relay configurations.
     if provider.base_url:
         kwargs["base_url"] = provider.base_url
@@ -870,7 +890,7 @@ def _build_anthropic(provider: ProviderConfig, model: ModelConfig) -> BaseChatMo
     return instance_a
 
 
-def _build_bedrock(provider: ProviderConfig, model: ModelConfig) -> BaseChatModel:
+def _build_bedrock(provider: ProviderConfig, model: ModelConfig, *, max_retries: int | None = None) -> BaseChatModel:
     try:
         from langchain_aws import ChatBedrockConverse
     except ImportError as exc:
@@ -883,6 +903,10 @@ def _build_bedrock(provider: ProviderConfig, model: ModelConfig) -> BaseChatMode
     kwargs: dict[str, Any] = {"model": model.id}
     if provider.headers:
         kwargs["additional_model_request_fields"] = dict(provider.headers)
+    if max_retries is not None:
+        from botocore.config import Config
+
+        kwargs["config"] = Config(retries={"total_max_attempts": max_retries + 1})
     instance_b: BaseChatModel = ChatBedrockConverse(**kwargs)
     _inject_model_token_limits(instance_b, model)
     return instance_b
