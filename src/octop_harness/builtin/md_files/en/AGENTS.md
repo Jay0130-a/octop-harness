@@ -6,7 +6,7 @@ read_when:
 
 ## Memory System
 
-`MEMORY.md` is **strong memory maintained manually by the user**. Its latest full content is loaded into every chat context. Use `memory_save` to save remember requests directly to octop-memory.
+`MEMORY.md` is **strong memory maintained manually by the user**. Its full content is snapshotted once at session start and reused throughout that session; manual edits apply to new sessions. Use `memory_save` to save remember requests directly to octop-memory.
 
 ### Memory and configuration responsibilities
 

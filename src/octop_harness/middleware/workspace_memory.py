@@ -1,8 +1,8 @@
-"""Fresh workspace context and the user-owned MEMORY.md write boundary.
+"""Session-snapshotted workspace context and the user-owned MEMORY.md boundary.
 
 Replaces deepagents' MemoryMiddleware by name, retaining its prompt formatting
-and cache breakpoint. File contents are refreshed once per agent invocation,
-through BackendWorkspace, rather than reusing a checkpoint's memory_contents.
+and cache breakpoint. File contents are loaded once through BackendWorkspace,
+then reused from checkpoint memory_contents for the lifetime of the session.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import posixpath
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from deepagents.middleware.memory import MemoryMiddleware as DeepAgentsMemoryMiddleware
 from deepagents.middleware.memory import MemoryState
@@ -27,6 +27,7 @@ _MEMORY_PROMPT = """<agent_memory>
 
 <memory_guidelines>
 MEMORY.md is strong memory maintained manually by the user and included in full in chat context.
+Its snapshot is loaded once at session start; manual edits apply to new sessions.
 Do not edit, append to, overwrite, delete, or use shell commands to modify MEMORY.md.
 When the user asks you to remember a fact, preference, decision, or lesson, use memory_save
 to persist it to octop-memory. Confirm remembering only after the tool succeeds.
@@ -50,7 +51,7 @@ def _normalized_path(path: str) -> str:
 
 
 class WorkspaceMemoryMiddleware(AgentMiddleware[Any, Any]):
-    """Load full current context and protect strong memory from file-tool edits."""
+    """Snapshot context per session; protect MEMORY.md from file-tool edits."""
 
     state_schema = MemoryState
 
@@ -66,32 +67,37 @@ class WorkspaceMemoryMiddleware(AgentMiddleware[Any, Any]):
         # onboarding switches; other files retain their configured selection.
         names = DEFAULT_MEMORY_FILES if memory_files is None else memory_files
         self._memory_files = tuple(dict.fromkeys([*names, "MEMORY.md"]))
-        self._prompt = DeepAgentsMemoryMiddleware(
-            backend=workspace.backend,
-            sources=[],
-            system_prompt=_MEMORY_PROMPT,
-            add_cache_control=True,
-        )
 
     def _load_contents(self) -> dict[str, str]:
-        self._prompt.sources = self._workspace.memory_paths(self._memory_files)
         contents: dict[str, str] = {}
-        for path in self._prompt.sources:
+        for path in self._workspace.memory_paths(self._memory_files):
             data = self._workspace.download_bytes(path)
             if data is not None:
                 contents[path] = data.decode("utf-8")
         return contents
 
     def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        contents = self._load_contents()
-        return None if state.get("memory_contents") == contents else {"memory_contents": contents}
+        if "memory_contents" in state:
+            return None
+        return {"memory_contents": self._load_contents()}
 
     async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        contents = await asyncio.to_thread(self._load_contents)
-        return None if state.get("memory_contents") == contents else {"memory_contents": contents}
+        if "memory_contents" in state:
+            return None
+        return {"memory_contents": await asyncio.to_thread(self._load_contents)}
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        return self._prompt.modify_request(request)
+        # Derive formatting paths from the persisted snapshot as well. A fresh
+        # middleware instance must not depend on files that exist now, and
+        # interleaved sessions must not overwrite a shared formatter's sources.
+        state = cast(MemoryState, request.state)
+        prompt = DeepAgentsMemoryMiddleware(
+            backend=self._workspace.backend,
+            sources=list(state.get("memory_contents", {})),
+            system_prompt=_MEMORY_PROMPT,
+            add_cache_control=True,
+        )
+        return prompt.modify_request(request)
 
     def wrap_model_call(
         self,

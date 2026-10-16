@@ -80,8 +80,9 @@ octop-harness is a library (not an app) that turns deepagents into a deployable 
 - 17 user-editable provider presets, including Hunyuan, Kimi, GLM, DeepSeek, MiniMax, and Moonshot.
 
 #### Memory (tiered)
-- `MEMORY.md` is user-maintained strong memory. Its full current content is loaded
-  at each agent invocation, even when structured memory is disabled. Agent file
+- `MEMORY.md` is user-maintained strong memory. Its full content is snapshotted
+  once per session and reused from the checkpoint, even when structured memory
+  is disabled. Manual edits apply to new sessions. Agent file
   tools cannot edit it. Hosts can expose a manual editor for this file.
 - Remember requests use `memory_save(content, topic)` to persist directly through
   octop-memory; `memory_search` / `memory_get` retrieve additional history.
