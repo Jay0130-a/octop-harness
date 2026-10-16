@@ -394,3 +394,15 @@ Thanks to all contributors:
 <a href="https://github.com/TencentCloud/octop-harness/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=TencentCloud/octop-harness" />
 </a>
+
+### Channel plugins
+
+A `kind: channel` manifest may register a channel class with
+`ctx.channel("acme", AcmeChannel, label="Acme IM", fields=[...])`.
+The class must inherit the hosts gateway `BaseChannel`; factories are not
+accepted. Harness stores metadata without importing the gateway. The host
+registers implementations before constructing persisted channels. Plugin IDs
+own their kinds: updates replace the same plugin, and conflicting owners are
+rejected. Hosts must stop affected live instances before replacing or removing
+registrations. Installing this library alone does not add channels to a host
+that has not implemented the bridge.

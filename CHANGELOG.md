@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 用户说「记住」时通过 `memory_save` 直接写入 octop-memory；`MEMORY.md` 改为用户手动维护的强记忆，每个会话首次加载全文快照并持续复用，手动修改对新会话生效，文件工具拒绝 Agent 修改。记忆规则维护在 `AGENTS.md` 模板，同步修正内置记忆管理文档；已有用户文档不自动覆盖。
 - 工作区上下文统一复用 deepagents 原生 `MemoryMiddleware` 的读取、session 快照、提示词格式和缓存断点；加载器只包裹文件内容，`MEMORY.md` 写保护并入现有 `FilesystemGuardMiddleware`，移除单独的记忆规则模块。
+### 新增
+
+- 插件系统支持 channel 类型及宿主拥有的通道注册元数据。
 
 ## [1.0.3] - 2026-10-14
 
