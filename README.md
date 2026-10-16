@@ -80,15 +80,22 @@ octop-harness is a library (not an app) that turns deepagents into a deployable 
 - 17 user-editable provider presets, including Hunyuan, Kimi, GLM, DeepSeek, MiniMax, and Moonshot.
 
 #### Memory (tiered)
-- `MEMORY.md` is user-maintained strong memory. Its full content is snapshotted
+- `MEMORY.md` (strong memory) and `USER.md` (profile) are user-maintained, including
+  onboarding. Their full contents are snapshotted
   once per session and reused from the checkpoint, even when structured memory
   is disabled. Manual edits apply to new sessions. Agent file
-  tools cannot edit it. Hosts can expose a manual editor for this file.
+  tools cannot edit them. Hosts can expose manual editors.
 - Workspace context loading, session snapshots, prompt formatting and cache
   breakpoints use deepagents' native `MemoryMiddleware`. Memory rules live in
-  workspace `AGENTS.md`; the existing filesystem guard enforces `MEMORY.md`
+  workspace `AGENTS.md`; the existing filesystem guard enforces both documents'
   file-tool write protection. Template updates do not overwrite existing user
-  documents; update legacy memory-writing rules in your `AGENTS.md` when migrating.
+  documents; update legacy auto-writing rules in `AGENTS.md` / `USER.md` when migrating.
+- Ordinary saves and automatic promotions check current owner documents through
+  `BackendWorkspace`, without refreshing the chat snapshot. Proven conflicts
+  retire the old atom and create a replacement review candidate, retaining evidence.
+  `memory_save` reports conflicts or incomplete checks. Duplicates remain stored
+  and are suppressed against matching session context. Uncertain checks leave facts
+  active. File-tool guards complement the host's shell/OS permissions.
 - Remember requests use `memory_save(content, topic)` to persist directly through
   octop-memory; `memory_search` / `memory_get` retrieve additional history.
 - Eligible conversation content is captured as **L0 raw events**, then distilled asynchronously into **L2 atoms** (`AtomCard`s) and **L3 entity pages**. Runtime failures are excluded; normal troubleshooting knowledge and explicit remember requests remain eligible.

@@ -178,6 +178,7 @@ class HarnessAgent:
             config=config,
             workspace_path=self._workspace_path,
             model_factory=self._model_factory,
+            workspace=self._workspace,
         )
         self._langfuse_callbacks: list[Any] | None = None
         self._protocols: dict[str, ChatProtocol] = {}
@@ -1249,7 +1250,7 @@ class HarnessAgent:
         # deepagents owns loading, session snapshots, formatting and caching.
         memory_files = DEFAULT_MEMORY_FILES if memory_override is None else memory_override
         memory_paths = self._workspace.memory_paths(
-            tuple(dict.fromkeys([*memory_files, "MEMORY.md"])), include_missing=True
+            tuple(dict.fromkeys([*memory_files, "MEMORY.md", "USER.md"])), include_missing=True
         )
         tools = self._build_tools()
         middleware = [

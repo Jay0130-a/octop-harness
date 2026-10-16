@@ -1,4 +1,4 @@
-"""Filesystem tool boundary: path denies, MEMORY.md writes and soft failures.
+"""Filesystem boundary: path denies, user-owned memory and soft failures.
 
 deepagents ``FilesystemMiddleware`` rejects ``permissions`` when the backend
 implements ``SandboxBackendProtocol`` (``local_shell``). Harness still needs
@@ -48,7 +48,7 @@ _FS_TOOL_OPS: dict[str, Literal["read", "write"]] = {
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 _MEMORY_WRITE_TOOLS = frozenset({"write_file", "edit_file", "append_file", "delete", "delete_file", "move_file"})
 _MEMORY_READ_ONLY_MESSAGE = (
-    "MEMORY.md is user-maintained strong memory. Edit it manually in the Strong memory tab. "
+    "{filename} is user-maintained memory. Edit it manually in the memory dashboard. "
     "Use memory_save to remember information in octop-memory."
 )
 
@@ -272,7 +272,7 @@ def _tool_call_meta(request: ToolCallRequest) -> tuple[str, str]:
 class FilesystemGuardMiddleware(AgentMiddleware[Any, Any]):
     """Filesystem tool boundary: user-owned memory, denies and soft failures.
 
-    When a workspace is bound, MEMORY.md writes are blocked independently of
+    When a workspace is bound, MEMORY.md / USER.md writes are blocked independently of
     optional permission rules and shell-command guard settings.
     Outside-root softening applies only to filesystem tools (``ls``,
     ``read_file``, …), not arbitrary tool ValueErrors.
@@ -338,26 +338,23 @@ class FilesystemGuardMiddleware(AgentMiddleware[Any, Any]):
         workspace = self._workspace
         if workspace is None or _tool_base_name(tool_name) not in _MEMORY_WRITE_TOOLS:
             return None
-        canonical = workspace.system_rel("MEMORY.md")
-        protected = {
-            _normalized_memory_path("MEMORY.md"),
-            _normalized_memory_path("/MEMORY.md"),
-            _normalized_memory_path(canonical),
-            _normalized_memory_path(f"/{canonical}"),
-            _normalized_memory_path(workspace.resolve_path("MEMORY.md")),
-        }
+        protected: dict[str, str] = {}
+        for filename in ("MEMORY.md", "USER.md"):
+            canonical = workspace.system_rel(filename)
+            for path in (filename, f"/{filename}", canonical, f"/{canonical}", workspace.resolve_path(filename)):
+                protected[_normalized_memory_path(path)] = filename
         for key in ("file_path", "path", "source", "destination"):
             raw = params.get(key)
             if not isinstance(raw, str):
                 continue
-            matches = _normalized_memory_path(raw) in protected
-            if not matches:
+            matched_filename = protected.get(_normalized_memory_path(raw))
+            if matched_filename is None:
                 try:
-                    matches = _normalized_memory_path(workspace.resolve_path(raw)) in protected
+                    matched_filename = protected.get(_normalized_memory_path(workspace.resolve_path(raw)))
                 except (OSError, ValueError, PermissionError):
                     continue
-            if matches:
-                return _MEMORY_READ_ONLY_MESSAGE
+            if matched_filename is not None:
+                return _MEMORY_READ_ONLY_MESSAGE.format(filename=matched_filename)
         return None
 
     def _blocked_message(self, request: ToolCallRequest) -> ToolMessage | None:

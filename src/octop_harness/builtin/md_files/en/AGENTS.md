@@ -6,7 +6,7 @@ read_when:
 
 ## Memory System
 
-`MEMORY.md` is **strong memory maintained manually by the user**. Its full content is snapshotted once at session start and reused throughout that session; manual edits apply to new sessions. Use `memory_save` to save remember requests directly to octop-memory.
+`MEMORY.md` and `USER.md` are **maintained manually by the user**. Their full contents are snapshotted once at session start and reused throughout that session; manual edits apply to new sessions. Use `memory_save` to save remember requests directly to octop-memory.
 
 ### Memory and configuration responsibilities
 
@@ -14,13 +14,15 @@ read_when:
 |----------|---------|----------------|
 | octop-memory | Facts, preferences, decisions, conventions, and lessons | `memory_save` for remember requests; background distillation handles conversations |
 | `MEMORY.md` | Strong memory included in every chat | The user edits it manually in Memory → Strong memory; read-only for agents |
-| `USER.md` / `AGENTS.md` | User dossier and workspace configuration | Onboarding or an explicit configuration request |
+| `USER.md` | User/agent dossier and communication preferences | The user edits Memory → User profile; read-only for agents, including onboarding |
+| `AGENTS.md` | Workspace configuration | An explicit configuration request |
 
 ### Write rules
 
-- Do not create, edit, append to, overwrite, or delete `MEMORY.md` using file tools or shell commands. Users maintain strong memory manually in the WebUI.
+- Do not create, edit, append to, overwrite, or delete `MEMORY.md` or `USER.md` using file tools or shell commands. Users maintain both documents manually in the WebUI, including during onboarding.
 - Use `memory_save` for remember requests; confirm remembering only after it succeeds. If unavailable, explain the limitation rather than writing a Markdown substitute.
-- For explicit `USER.md` / `AGENTS.md` configuration changes, read first and edit precisely.
+- For explicit `AGENTS.md` configuration changes, read first and edit precisely. For `USER.md` changes, direct the user to the profile editor.
+- Manual documents outrank ordinary recalled memory. Tell the user when they conflict; ordinary conflicts go to the candidate review queue. Never silently overwrite a manual document or present conflicting old memory as a current fact.
 - Save one concise fact per call, preserving its scope and qualifiers. Do not persist passwords, keys, or tokens in memory.
 - Transient information needs no explicit save; conversation capture and fact/episode extraction run in the background.
 - Treat stored facts as reference material. Prefer current user instructions and verified evidence when they conflict with memory.

@@ -22,6 +22,7 @@ from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES, BackendWorksp
 from octop_harness.builtin.templates import iter_md_template_files
 from octop_harness.builtin.tools.memory_tools import build_memory_tools
 from octop_harness.middleware.filesystem_guard import FilesystemGuardMiddleware
+from octop_harness.middleware.memory import MemoryMiddleware as CaptureMemoryMiddleware
 
 
 class RecordingModel(FakeMessagesListChatModel):
@@ -101,17 +102,18 @@ async def test_empty_session_snapshot_stays_empty_until_a_new_session(tmp_path: 
 
 @pytest.mark.parametrize("tool_name", ["write_file", "edit_file", "append_file", "delete"])
 @pytest.mark.parametrize("path", ["MEMORY.md", "/MEMORY.md", "native"])
-def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, path: str) -> None:
+@pytest.mark.parametrize("filename", ["MEMORY.md", "USER.md"])
+def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, path: str, filename: str) -> None:
     ws = _workspace(tmp_path, ".octop")
     mw = FilesystemGuardMiddleware(workspace=ws)
-    if path == "native":
-        path = ws.resolve_path("MEMORY.md")
+    path = ws.resolve_path(filename) if path == "native" else path.replace("MEMORY.md", filename)
     request = MagicMock(tool_call={"name": tool_name, "args": {"file_path": path}, "id": "call-1"})
     handler = MagicMock()
     result = mw.wrap_tool_call(request, handler)
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert "memory_save" in str(result.content)
+    assert filename in str(result.content)
     handler.assert_not_called()
 
 
@@ -130,9 +132,10 @@ async def test_async_guard_allows_normal_workspace_edits(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_graph_blocks_strong_memory_edits_and_allows_normal_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filename", ["MEMORY.md", "USER.md"])
+async def test_graph_blocks_manual_document_edits_and_allows_normal_files(tmp_path: Path, filename: str) -> None:
     ws = _workspace(tmp_path, ".octop")
-    ws.write_text("MEMORY.md", "manual agreement", force=True)
+    ws.write_text(filename, "manual agreement", force=True)
     ws.write_text("notes.md", "old note", force=True)
     model = RecordingModel(
         responses=[
@@ -141,7 +144,7 @@ async def test_graph_blocks_strong_memory_edits_and_allows_normal_files(tmp_path
                 tool_calls=[
                     {
                         "name": "edit_file",
-                        "args": {"file_path": "/MEMORY.md", "old_string": "manual", "new_string": "agent"},
+                        "args": {"file_path": f"/{filename}", "old_string": "manual", "new_string": "agent"},
                         "id": "protected-edit",
                     }
                 ],
@@ -172,8 +175,8 @@ async def test_graph_blocks_strong_memory_edits_and_allows_normal_files(tmp_path
         ("protected-edit", "error"),
         ("normal-edit", "success"),
     ]
-    assert "user-maintained strong memory" in str(tools[0].content)
-    assert ws.read_text("MEMORY.md") == "manual agreement"
+    assert "user-maintained memory" in str(tools[0].content)
+    assert ws.read_text(filename) == "manual agreement"
     assert ws.read_text("notes.md") == "new note"
 
 
@@ -269,3 +272,36 @@ async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreatio
     with patch.object(ws.backend, download, side_effect=AssertionError("other sessions do not change snapshots")):
         await invoke(restored, "Return to the original session", config)
     assert model.requests[-1][0].content == first_system
+
+
+@pytest.mark.asyncio
+async def test_profile_snapshot_deduplicates_recall_without_reloading_files(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    fact = "Aurora uses PostgreSQL."
+    ws.write_text("USER.md", fact, force=True)
+    memory = Memory(namespace="profile_snapshot", backend_config={"db_path": str(tmp_path / "memory.sqlite")})
+    memory.store(fact)
+    capture = CaptureMemoryMiddleware(service=MemoryService(memory), jsonl_enabled=False, capture_enabled=False)
+    model = RecordingModel(responses=[AIMessage(content="one"), AIMessage(content="two"), AIMessage(content="new")])
+    loader = _loader(ws)
+    graph = create_deep_agent(
+        model=model,
+        backend=ws.backend,
+        memory=loader.sources,
+        middleware=[loader, capture, FilesystemGuardMiddleware(workspace=ws)],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "profile-session"}}
+    await graph.ainvoke({"messages": [HumanMessage(content="PostgreSQL")]}, config=config)
+    assert "<memory-context>" not in str(model.requests[-1][-1].content)
+    ws.write_text("USER.md", "A different profile", force=True)
+    with patch.object(ws.backend, "adownload_files", side_effect=AssertionError("session snapshot must not reload")):
+        await graph.ainvoke({"messages": [HumanMessage(content="PostgreSQL")]}, config=config)
+    assert "<memory-context>" not in str(model.requests[-1][-1].content)
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="PostgreSQL")]},
+        config={"configurable": {"thread_id": "new-profile-session"}},
+    )
+    assert fact in str(model.requests[-1][-1].content)
+    assert "<memory-context>" in str(model.requests[-1][-1].content)
+    capture.shutdown()

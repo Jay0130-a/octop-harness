@@ -25,9 +25,10 @@ once per session and reused from its checkpoint; edits apply to new sessions.
 |-------------|---------|----------------|
 | octop-memory | Durable facts, preferences, decisions and lessons | `memory_save`; background conversation distillation |
 | `MEMORY.md` | Strong memory always available in the session | The user edits it manually; agents leave it unchanged |
-| `USER.md` / `AGENTS.md` | User dossier and workspace configuration | Onboarding or an explicit configuration request |
+| `USER.md` | User/agent dossier | The user edits it manually; agents are read-only, including onboarding |
+| `AGENTS.md` | Workspace configuration | An explicit configuration request |
 
-Do not create, edit, append to, overwrite or delete `MEMORY.md` through file
+Do not create, edit, append to, overwrite or delete `MEMORY.md` or `USER.md` through file
 tools or shell commands. Do not use other Markdown files as a substitute for
 ordinary memory.
 
@@ -39,7 +40,7 @@ ordinary memory.
    files unchanged.
 3. Use `memory_search` for relevant history and `memory_get` to inspect sources.
    Strong memory is already present in the session context.
-4. For an explicit workspace configuration edit, read the requested document
+4. For an explicit `AGENTS.md` configuration edit, read the requested document
    and edit only the relevant section.
 
 ## What not to put in memory

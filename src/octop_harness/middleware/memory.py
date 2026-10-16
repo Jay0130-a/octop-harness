@@ -289,7 +289,12 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
                 and isinstance(messages[-1], HumanMessage)
                 and not has_recall_snapshot(messages[-1])
             ):
-                stamped = self._prepare_recall(messages[-1], runtime)
+                manual_context = {
+                    str(path).replace("\\", "/").rsplit("/", 1)[-1]: body
+                    for path, body in state.get("memory_contents", {}).items()
+                    if str(path).replace("\\", "/").rsplit("/", 1)[-1] in {"USER.md", "MEMORY.md"}
+                }
+                stamped = self._prepare_recall(messages[-1], runtime, manual_context=manual_context or None)
                 return {"messages": [stamped]}
         except Exception:  # pragma: no cover - never raise into the user turn; pylint: disable=broad-except
             logger.warning("MemoryMiddleware before_model failed", exc_info=True)
@@ -467,7 +472,9 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
     # Read-path helper (recall injection)
     # ------------------------------------------------------------------
 
-    def _prepare_recall(self, message: HumanMessage, runtime: Any) -> HumanMessage:
+    def _prepare_recall(
+        self, message: HumanMessage, runtime: Any, *, manual_context: dict[str, str] | None = None
+    ) -> HumanMessage:
         """Freeze success, empty recall, maintenance skip, or failure for this turn."""
         rendered = ""
         try:
@@ -479,8 +486,9 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
                 logger.info("memory.recall skip: maintenance %s", self.maintenance_status()["phase"])
             elif query:
                 assert self._service is not None  # gated by caller
+                context_options = {"manual_context": manual_context} if manual_context is not None else {}
                 result = self._service.recall(
-                    query, thread_id=thread_id, session_id=session_id, limit=self._recall_limit
+                    query, thread_id=thread_id, session_id=session_id, limit=self._recall_limit, **context_options
                 )
                 rendered = getattr(result, "rendered", None) or ""
                 logger.debug(

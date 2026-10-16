@@ -12,7 +12,9 @@ class _FakeService:
     def __init__(self) -> None:
         self.search_result: dict[str, Any] = {"hits": []}
         self.get_result: dict[str, Any] = {"content": ""}
-        self.save_result = type("Node", (), {"content": "User prefers dark mode", "topic": "preferences"})()
+        self.save_result = type(
+            "Node", (), {"content": "User prefers dark mode", "topic": "preferences", "metadata": {}}
+        )()
         self.save_calls: list[dict[str, Any]] = []
         self.search_calls: list[dict[str, Any]] = []
         self.get_calls: list[dict[str, Any]] = []
@@ -31,6 +33,12 @@ class _FakeService:
 
 
 class TestBuildMemoryTools:
+    def test_memory_save_reports_a_manual_document_conflict(self) -> None:
+        service = _FakeService()
+        service.save_result.metadata = {"manual_document_conflict": True}
+        save = next(t for t in build_memory_tools(service) if t.name == "memory_save")
+        assert "review candidate" in save.invoke({"content": "A conflicting fact"})
+
     def test_returns_recall_tools(self) -> None:
         tools = build_memory_tools(_FakeService())  # type: ignore[arg-type]
         assert {t.name for t in tools} == {"memory_search", "memory_get", "memory_save"}
