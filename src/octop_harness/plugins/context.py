@@ -85,7 +85,7 @@ class PluginContext:
         Args:
             kind: Channel-type string persisted in the control-plane DB and
                 passed to the gateway channel manager (e.g. ``"acme"``).
-            channel_cls: Channel class (or zero-arg-compatible factory). The
+            channel_cls: Channel class inheriting the hosts BaseChannel. The
                 host application is responsible for constructing it with its
                 own ``ChannelConfig`` contract.
             label: Display name for the dashboard channel catalogue. Falls

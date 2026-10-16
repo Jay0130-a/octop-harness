@@ -9,9 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 新增
 
-- 插件系统新增 `channel` 插件类型：`kind: channel` 插件可在 `setup()` 中通过 `ctx.channel(kind, channel_cls, label=..., fields=...)` 贡献渠道实现；`PluginRegistry.all_channels()` 汇总全部插件渠道注册（同 kind 冲突时先注册者优先）。
+- 插件系统支持 channel 类型及宿主拥有的通道注册元数据。
 
+## [1.0.3] - 2026-10-14
+
+### 新增
+
+- `MemoryMiddleware.pause_background` 支持宿主按专家暂停并排空后台记忆任务，供备份恢复使用。
+- 记忆辅助调用使用独立 SDK 实例控制重试次数与退避；回退时重新计算目标模型参数，不携带首选模型的厂商扩展，避免影响主聊天（TencentCloud/Octop#1360）。
 - 记忆辅助调用可配置客户端兜底 `memory_aux_max_tokens`（提炼预算仍走 `memory_extract_max_tokens`），以及 OpenAI 兼容端点的 `memory_aux_extra_body`。显式 `extra_body` 覆盖 `memory_aux_thinking` 生成的同名键。
+- OpenAI 兼容模型支持按模型选择 Chat Completions 或 Responses API，并可显式开启受限的 Responses → Chat Completions 回退。
+
+### 修复
+
+- ChatGPT Codex 端点使用无状态流式 Responses 请求，将主系统提示词映射到 instructions，后续系统消息保留为 developer；显式 instructions 原样保留，并保留多轮工具历史；将 langchain-openai 最低版本提高至 1.3.3，避免无状态历史引用未存储条目。
+- 减少启动和对话过程中的重复诊断日志，保留需要关注的错误与告警。
 
 ## [1.0.2] - 2026-10-09
 

@@ -60,8 +60,8 @@ class ChannelRegistration:
         if not kind:
             raise ValueError("channel kind must not be empty")
         self.kind = kind
-        if not (isinstance(self.channel_cls, type) or callable(self.channel_cls)):
-            raise ValueError("channel_cls must be a class or factory callable")
+        if not isinstance(self.channel_cls, type):
+            raise ValueError("channel_cls must be a class")
         if self.fields and not isinstance(self.fields, list):
             raise ValueError("fields must be a list of field dicts")
 
@@ -99,6 +99,16 @@ class PluginRegistry:
         self._plugins.clear()
 
     def register(self, loaded: LoadedPlugin) -> None:
+        if any(reg.plugin_id != loaded.manifest.id for reg in loaded.channels):
+            raise ValueError("channel registration owner must match plugin ID")
+        kinds = [reg.kind for reg in loaded.channels]
+        if len(kinds) != len(set(kinds)):
+            raise ValueError("duplicate channel kind in plugin")
+        for plugin in self._plugins.values():
+            if plugin.manifest.id == loaded.manifest.id:
+                continue
+            if set(kinds).intersection(reg.kind for reg in plugin.channels):
+                raise ValueError("channel kind is already owned by another plugin")
         self._plugins[loaded.manifest.id] = loaded
 
     def unregister(self, plugin_id: str) -> LoadedPlugin | None:
@@ -120,7 +130,7 @@ class PluginRegistry:
         return out
 
     def all_channels(self) -> list[ChannelRegistration]:
-        """Channel registrations across all enabled plugins (first wins on kind clash)."""
+        """Channel registrations from loaded plugins; register() rejects conflicting owners."""
         out: list[ChannelRegistration] = []
         seen: set[str] = set()
         for plugin in self._plugins.values():

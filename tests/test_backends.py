@@ -185,10 +185,17 @@ class TestDictForms:
         """Default root is '/', which DOES trigger the warning."""
         from deepagents.backends import LocalShellBackend
 
+        from octop_harness.backends import _HOST_ROOT_WARNED
+
+        # The warning is once per workspace for the process. An earlier test
+        # may already have built a host-root shell with no workspace.
+        _HOST_ROOT_WARNED.clear()
         with caplog.at_level(logging.WARNING):
             backend = resolve_backend("local_shell")
+            resolve_backend("local_shell")
         assert isinstance(backend, LocalShellBackend)
-        assert any("rooted at '/'" in rec.message for rec in caplog.records)
+        matching = [rec for rec in caplog.records if "rooted at '/'" in rec.message]
+        assert len(matching) == 1
 
     def test_local_shell_root_slash_warns(
         self,
@@ -196,13 +203,20 @@ class TestDictForms:
         tmp_path: Path,
     ) -> None:
         """Explicitly setting root_dir='/' triggers the warning (includes workspace)."""
+        from octop_harness.backends import _HOST_ROOT_WARNED
+
+        _HOST_ROOT_WARNED.clear()
         with caplog.at_level(logging.WARNING):
             resolve_backend(
                 {"type": "local_shell", "root_dir": "/"},
                 workspace_dir=tmp_path,
             )
+            resolve_backend(
+                {"type": "local_shell", "root_dir": "/"},
+                workspace_dir=tmp_path,
+            )
         matching = [rec.message for rec in caplog.records if "rooted at '/'" in rec.message]
-        assert matching
+        assert len(matching) == 1
         assert f"workspace={tmp_path}" in matching[0]
 
     def test_local_shell_explicit_root_no_warning(

@@ -115,7 +115,7 @@ def test_context_channel_validates_input(tmp_path: Path) -> None:
         ctx.channel("acme", "not-a-callable")  # type: ignore[arg-type]
 
 
-def test_registry_all_channels_first_wins() -> None:
+def test_registry_rejects_channel_owner_conflict() -> None:
     from octop_harness.plugins.registry import ChannelRegistration, LoadedPlugin
 
     class A:
@@ -136,7 +136,8 @@ def test_registry_all_channels_first_wins() -> None:
     )
     registry = PluginRegistry()
     registry.register(loaded1)
-    registry.register(loaded2)
+    with pytest.raises(ValueError, match="already owned"):
+        registry.register(loaded2)
     regs = registry.all_channels()
     assert len(regs) == 1
     assert regs[0].channel_cls is A
@@ -179,3 +180,25 @@ def test_tool_enabled_defaults_on_when_plugin_globally_on() -> None:
         )
         is False
     )
+
+
+def test_channel_registry_update_and_unload(tmp_path: Path) -> None:
+    from octop_harness.plugins.registry import ChannelRegistration, LoadedPlugin
+
+    manifest = PluginManifest(id="owner", version="1", name="Owner", kind="channel", entry="main.py")
+    registry = PluginRegistry()
+    first = LoadedPlugin(
+        manifest=manifest,
+        source_path=tmp_path,
+        channels=[ChannelRegistration(plugin_id="owner", kind="acme", channel_cls=object)],
+    )
+    registry.register(first)
+    updated = LoadedPlugin(
+        manifest=manifest,
+        source_path=tmp_path,
+        channels=[ChannelRegistration(plugin_id="owner", kind="new-kind", channel_cls=object)],
+    )
+    registry.register(updated)
+    assert [reg.kind for reg in registry.all_channels()] == ["new-kind"]
+    registry.unregister("owner")
+    assert registry.all_channels() == []
