@@ -51,8 +51,8 @@ class BootstrapMiddleware(AgentMiddleware[Any, Any]):
     the tail, and residuals break strict backends after this middleware is
     removed.
 
-    Completion (any one at end of turn): write tool on ``.bootstrapped``, write
-    tool on ``USER.md``, or a non-empty final AI reply. ``max_bootstrap_turns``
+    Completion (any one at end of turn): write tool on ``.bootstrapped`` or
+    a non-empty final AI reply. USER.md is user-maintained. ``max_bootstrap_turns``
     is kept for API compatibility but no longer gates completion.
     """
 
@@ -69,7 +69,6 @@ class BootstrapMiddleware(AgentMiddleware[Any, Any]):
         self._workspace = workspace
         self._bootstrap_path = workspace.resolve_path(bootstrap_file, default=BOOTSTRAP_FILENAME)
         self._marker_path = workspace.resolve_path(bootstrap_marker, default=BOOTSTRAPPED_MARKER)
-        self._user_path = workspace.resolve_path(USER_FILENAME)
         self._max_bootstrap_turns = max_bootstrap_turns
         self._on_complete = on_complete
         self._announced_bootstrap = False
@@ -143,11 +142,7 @@ class BootstrapMiddleware(AgentMiddleware[Any, Any]):
         return self.after_agent(state, runtime)
 
     def _should_complete(self, state: Any) -> bool:
-        return (
-            self._wrote_to(state, self._marker_path)
-            or self._wrote_to(state, self._user_path)
-            or self._has_final_reply(state)
-        )
+        return self._wrote_to(state, self._marker_path) or self._has_final_reply(state)
 
     def _complete(self) -> None:
         if self.is_bootstrapped:
