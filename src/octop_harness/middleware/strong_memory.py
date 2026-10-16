@@ -1,27 +1,23 @@
-"""Session-snapshotted workspace context and the user-owned MEMORY.md boundary.
+"""Strong-memory prompt policy and the user-owned MEMORY.md write boundary.
 
-Replaces deepagents' MemoryMiddleware by name, retaining its prompt formatting
-and cache breakpoint. File contents are loaded once through BackendWorkspace,
-then reused from checkpoint memory_contents for the lifetime of the session.
+File loading, session snapshots and prompt formatting belong to deepagents'
+MemoryMiddleware. This module only supplies its prompt and guards file writes.
 """
 
 from __future__ import annotations
 
-import asyncio
 import posixpath
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, cast
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from deepagents.middleware.memory import MemoryMiddleware as DeepAgentsMemoryMiddleware
-from deepagents.middleware.memory import MemoryState
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES, BackendWorkspace
+from octop_harness.backends.workspace import BackendWorkspace
 
-_MEMORY_PROMPT = """<agent_memory>
+STRONG_MEMORY_PROMPT = """<agent_memory>
 {agent_memory}
 </agent_memory>
 
@@ -50,68 +46,12 @@ def _normalized_path(path: str) -> str:
     return posixpath.normpath(path.strip().replace("\\", "/")).casefold()
 
 
-class WorkspaceMemoryMiddleware(AgentMiddleware[Any, Any]):
-    """Snapshot context per session; protect MEMORY.md from file-tool edits."""
+class StrongMemoryWriteGuard(AgentMiddleware[Any, Any]):
+    """Protect user-maintained MEMORY.md from agent file-tool edits."""
 
-    state_schema = MemoryState
-
-    @property
-    def name(self) -> str:
-        """Replace deepagents' default loader at its original stack position."""
-        return "MemoryMiddleware"
-
-    def __init__(self, workspace: BackendWorkspace, *, memory_files: Sequence[str] | None = None) -> None:
+    def __init__(self, workspace: BackendWorkspace) -> None:
         super().__init__()
         self._workspace = workspace
-        # Strong memory stays active independently of structured-memory and
-        # onboarding switches; other files retain their configured selection.
-        names = DEFAULT_MEMORY_FILES if memory_files is None else memory_files
-        self._memory_files = tuple(dict.fromkeys([*names, "MEMORY.md"]))
-
-    def _load_contents(self) -> dict[str, str]:
-        contents: dict[str, str] = {}
-        for path in self._workspace.memory_paths(self._memory_files):
-            data = self._workspace.download_bytes(path)
-            if data is not None:
-                contents[path] = data.decode("utf-8")
-        return contents
-
-    def before_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        if "memory_contents" in state:
-            return None
-        return {"memory_contents": self._load_contents()}
-
-    async def abefore_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        if "memory_contents" in state:
-            return None
-        return {"memory_contents": await asyncio.to_thread(self._load_contents)}
-
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
-        # Derive formatting paths from the persisted snapshot as well. A fresh
-        # middleware instance must not depend on files that exist now, and
-        # interleaved sessions must not overwrite a shared formatter's sources.
-        state = cast(MemoryState, request.state)
-        prompt = DeepAgentsMemoryMiddleware(
-            backend=self._workspace.backend,
-            sources=list(state.get("memory_contents", {})),
-            system_prompt=_MEMORY_PROMPT,
-            add_cache_control=True,
-        )
-        return prompt.modify_request(request)
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        return handler(self.modify_request(request))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        return await handler(self.modify_request(request))
 
     def _blocked_edit(self, request: ToolCallRequest) -> ToolMessage | None:
         call = request.tool_call

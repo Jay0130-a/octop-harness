@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -10,15 +11,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from deepagents.middleware.memory import MemoryMiddleware
 from langchain.agents.middleware import ModelRequest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from octop_memory import Memory, MemoryService
 
-from octop_harness.backends.workspace import BackendWorkspace
+from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES, BackendWorkspace
 from octop_harness.builtin.tools.memory_tools import build_memory_tools
-from octop_harness.middleware.workspace_memory import WorkspaceMemoryMiddleware
+from octop_harness.middleware.strong_memory import STRONG_MEMORY_PROMPT, StrongMemoryWriteGuard
+
+
+class RecordingModel(FakeMessagesListChatModel):
+    requests: list[Any] = []
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+    def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> Any:
+        self.requests.append(deepcopy(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 def _workspace(tmp_path: Path, prefix: str = "") -> BackendWorkspace:
@@ -26,38 +39,47 @@ def _workspace(tmp_path: Path, prefix: str = "") -> BackendWorkspace:
     return BackendWorkspace(backend, tmp_path, system_files_path=prefix)
 
 
+def _loader(ws: BackendWorkspace, memory_files: Sequence[str] = DEFAULT_MEMORY_FILES) -> MemoryMiddleware[Any, Any]:
+    return MemoryMiddleware(
+        backend=ws.backend,
+        sources=ws.memory_paths(memory_files, include_missing=True),
+        system_prompt=STRONG_MEMORY_PROMPT,
+        add_cache_control=True,
+    )
+
+
 @pytest.mark.parametrize("prefix", ["", ".octop"])
 def test_session_keeps_snapshot_after_edits_and_deletion(tmp_path: Path, prefix: str) -> None:
     ws = _workspace(tmp_path, prefix)
     ws.write_text("MEMORY.md", "original strong memory", force=True)
-    mw = WorkspaceMemoryMiddleware(ws)
-    first = mw.before_agent({}, MagicMock())
+    mw = _loader(ws)
+    first = mw.before_agent({}, MagicMock(), {})
     assert first is not None
     ws.write_text("MEMORY.md", "updated strong memory", force=True)
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("session must reuse its snapshot")):
-        assert mw.before_agent(first, MagicMock()) is None
+    with patch.object(ws.backend, "download_files", side_effect=AssertionError("session must reuse its snapshot")):
+        assert mw.before_agent(first, MagicMock(), {}) is None
     assert list(first["memory_contents"].values()) == ["original strong memory"]
-    new_session = mw.before_agent({}, MagicMock())
+    new_session = mw.before_agent({}, MagicMock(), {})
     assert new_session is not None
     assert list(new_session["memory_contents"].values()) == ["updated strong memory"]
     ws.delete("MEMORY.md")
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("session must reuse its snapshot")):
-        assert mw.before_agent(first, MagicMock()) is None
-    assert mw.before_agent({}, MagicMock()) == {"memory_contents": {}}
+    with patch.object(ws.backend, "download_files", side_effect=AssertionError("session must reuse its snapshot")):
+        assert mw.before_agent(first, MagicMock(), {}) is None
+    assert mw.before_agent({}, MagicMock(), {}) == {"memory_contents": {}}
 
 
 @pytest.mark.asyncio
 async def test_empty_session_snapshot_stays_empty_until_a_new_session(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
-    mw = WorkspaceMemoryMiddleware(ws, memory_files=())
-    first = await mw.abefore_agent({}, MagicMock())
+    mw = _loader(ws, memory_files=("MEMORY.md",))
+    first = await mw.abefore_agent({}, MagicMock(), {})
     assert first == {"memory_contents": {}}
     content = "用户手动维护的强记忆\n" * 1000
     ws.write_text("MEMORY.md", content, force=True)
     ws.write_text("AGENTS.md", "bootstrap instructions", force=True)
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("empty snapshot is still initialized")):
-        assert await mw.abefore_agent(first, MagicMock()) is None
-    loaded = await mw.abefore_agent({}, MagicMock())
+    with patch.object(ws.backend, "adownload_files", side_effect=AssertionError("empty snapshot is still initialized")):
+        assert await mw.abefore_agent(first, MagicMock(), {}) is None
+    loaded = await mw.abefore_agent({}, MagicMock(), {})
     assert loaded is not None
     assert list(loaded["memory_contents"].values()) == [content]
     request = ModelRequest(
@@ -80,7 +102,7 @@ async def test_empty_session_snapshot_stays_empty_until_a_new_session(tmp_path: 
 @pytest.mark.parametrize("path", ["MEMORY.md", "/MEMORY.md", "native"])
 def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, path: str) -> None:
     ws = _workspace(tmp_path, ".octop")
-    mw = WorkspaceMemoryMiddleware(ws)
+    mw = StrongMemoryWriteGuard(ws)
     if path == "native":
         path = ws.resolve_path("MEMORY.md")
     request = MagicMock(tool_call={"name": tool_name, "args": {"file_path": path}, "id": "call-1"})
@@ -94,7 +116,7 @@ def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, 
 
 @pytest.mark.asyncio
 async def test_async_guard_allows_normal_workspace_edits(tmp_path: Path) -> None:
-    mw = WorkspaceMemoryMiddleware(_workspace(tmp_path))
+    mw = StrongMemoryWriteGuard(_workspace(tmp_path))
     request = MagicMock(tool_call={"name": "edit_file", "args": {"file_path": "notes.md"}, "id": "call-1"})
     calls: list[Any] = []
 
@@ -106,17 +128,59 @@ async def test_async_guard_allows_normal_workspace_edits(tmp_path: Path) -> None
     assert calls == [request]
 
 
-def test_graph_preserves_session_snapshot_across_turns_and_graph_recreation(tmp_path: Path) -> None:
-    class RecordingModel(FakeMessagesListChatModel):
-        requests: list[Any] = []
+@pytest.mark.asyncio
+async def test_graph_blocks_strong_memory_edits_and_allows_normal_files(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path, ".octop")
+    ws.write_text("MEMORY.md", "manual agreement", force=True)
+    ws.write_text("notes.md", "old note", force=True)
+    model = RecordingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "edit_file",
+                        "args": {"file_path": "/MEMORY.md", "old_string": "manual", "new_string": "agent"},
+                        "id": "protected-edit",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "edit_file",
+                        "args": {"file_path": "/notes.md", "old_string": "old", "new_string": "new"},
+                        "id": "normal-edit",
+                    }
+                ],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    loader = _loader(ws)
+    graph = create_deep_agent(
+        model=model,
+        backend=ws.backend,
+        memory=loader.sources,
+        middleware=[loader, StrongMemoryWriteGuard(ws)],
+    )
+    result = await graph.ainvoke({"messages": [HumanMessage(content="Edit both files")]})
+    tools = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
+    assert [(msg.tool_call_id, msg.status) for msg in tools] == [
+        ("protected-edit", "error"),
+        ("normal-edit", "success"),
+    ]
+    assert "user-maintained strong memory" in str(tools[0].content)
+    assert ws.read_text("MEMORY.md") == "manual agreement"
+    assert ws.read_text("notes.md") == "new note"
 
-        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-            return self
 
-        def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> Any:
-            self.requests.append(deepcopy(messages))
-            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreation(
+    tmp_path: Path, async_mode: bool
+) -> None:
     ws = _workspace(tmp_path)
     ws.write_text("MEMORY.md", "first manual agreement", force=True)
     memory = Memory(namespace="strong_test", backend_config={"db_path": str(tmp_path / "memory.sqlite")})
@@ -143,37 +207,43 @@ def test_graph_preserves_session_snapshot_across_turns_and_graph_recreation(tmp_
     )
     checkpointer = InMemorySaver()
 
-    def make_graph(middleware: WorkspaceMemoryMiddleware) -> Any:
+    def make_graph() -> Any:
+        loader = _loader(ws)
         return create_deep_agent(
             model=model,
             backend=ws.backend,
             tools=build_memory_tools(service),
-            memory=ws.memory_paths(),
-            middleware=[middleware],
+            memory=loader.sources,
+            middleware=[loader, StrongMemoryWriteGuard(ws)],
             checkpointer=checkpointer,
         )
 
-    middleware = WorkspaceMemoryMiddleware(ws)
-    graph = make_graph(middleware)
+    async def invoke(graph: Any, text: str, config: Any) -> Any:
+        data = {"messages": [HumanMessage(content=text)]}
+        return await graph.ainvoke(data, config=config) if async_mode else graph.invoke(data, config=config)
+
+    download = "adownload_files" if async_mode else "download_files"
+    graph = make_graph()
     config = {"configurable": {"thread_id": "strong-memory-test"}}
-    graph.invoke({"messages": [HumanMessage(content="Remember Aurora uses PostgreSQL")]}, config=config)
+    await invoke(graph, "Remember Aurora uses PostgreSQL", config)
     assert memory.search_atoms("PostgreSQL")
     assert ws.read_text("MEMORY.md") == "first manual agreement"
     first_system = model.requests[-1][0].content
+    assert str(first_system).count("<agent_memory>") == 1
     ws.write_text("MEMORY.md", "second manual agreement", force=True)
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("no per-turn file read")):
-        graph.invoke({"messages": [HumanMessage(content="Continue")]}, config=config)
+    with patch.object(ws.backend, download, side_effect=AssertionError("no per-turn file read")):
+        await invoke(graph, "Continue", config)
     assert model.requests[-1][0].content == first_system
 
-    restored_middleware = WorkspaceMemoryMiddleware(ws)
-    restored = make_graph(restored_middleware)
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("restore uses checkpoint")):
-        restored.invoke({"messages": [HumanMessage(content="Continue after restart")]}, config=config)
+    restored = make_graph()
+    with patch.object(ws.backend, download, side_effect=AssertionError("restore uses checkpoint")):
+        await invoke(restored, "Continue after restart", config)
     assert model.requests[-1][0].content == first_system
 
-    restored.invoke(
-        {"messages": [HumanMessage(content="New session")]},
-        config={"configurable": {"thread_id": "new-strong-memory-session"}},
+    await invoke(
+        restored,
+        "New session",
+        {"configurable": {"thread_id": "new-strong-memory-session"}},
     )
     new_system = model.requests[-1][0].content
     assert "second manual agreement" in str(new_system)
@@ -182,11 +252,13 @@ def test_graph_preserves_session_snapshot_across_turns_and_graph_recreation(tmp_
     assert "As you learn from your interactions" not in str(new_system)
 
     ws.delete("MEMORY.md")
-    restored.invoke(
-        {"messages": [HumanMessage(content="Another new session")]},
-        config={"configurable": {"thread_id": "empty-strong-memory-session"}},
+    restored = make_graph()
+    await invoke(
+        restored,
+        "Another new session",
+        {"configurable": {"thread_id": "empty-strong-memory-session"}},
     )
     assert "second manual agreement" not in str(model.requests[-1][0].content)
-    with patch.object(ws, "memory_paths", side_effect=AssertionError("other sessions do not change snapshots")):
-        restored.invoke({"messages": [HumanMessage(content="Return to the original session")]}, config=config)
+    with patch.object(ws.backend, download, side_effect=AssertionError("other sessions do not change snapshots")):
+        await invoke(restored, "Return to the original session", config)
     assert model.requests[-1][0].content == first_system
