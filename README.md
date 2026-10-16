@@ -85,8 +85,10 @@ octop-harness is a library (not an app) that turns deepagents into a deployable 
   is disabled. Manual edits apply to new sessions. Agent file
   tools cannot edit it. Hosts can expose a manual editor for this file.
 - Workspace context loading, session snapshots, prompt formatting and cache
-  breakpoints use deepagents' native `MemoryMiddleware`. Harness only supplies
-  the memory prompt policy and the `MEMORY.md` file-tool write guard.
+  breakpoints use deepagents' native `MemoryMiddleware`. Memory rules live in
+  workspace `AGENTS.md`; the existing filesystem guard enforces `MEMORY.md`
+  file-tool write protection. Template updates do not overwrite existing user
+  documents; update legacy memory-writing rules in your `AGENTS.md` when migrating.
 - Remember requests use `memory_save(content, topic)` to persist directly through
   octop-memory; `memory_search` / `memory_get` retrieve additional history.
 - Eligible conversation content is captured as **L0 raw events**, then distilled asynchronously into **L2 atoms** (`AtomCard`s) and **L3 entity pages**. Runtime failures are excluded; normal troubleshooting knowledge and explicit remember requests remain eligible.

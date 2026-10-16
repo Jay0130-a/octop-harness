@@ -23,6 +23,7 @@ read_when:
 - For explicit `USER.md` / `AGENTS.md` configuration changes, read first and edit precisely.
 - Save one concise fact per call, preserving its scope and qualifiers. Do not persist passwords, keys, or tokens in memory.
 - Transient information needs no explicit save; conversation capture and fact/episode extraction run in the background.
+- Treat stored facts as reference material. Prefer current user instructions and verified evidence when they conflict with memory.
 
 ### Routing examples
 

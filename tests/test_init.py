@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from deepagents.middleware.memory import MemoryMiddleware as DeepAgentsMemoryMiddleware
+from langchain_core.messages import ToolMessage
 
 from octop_harness.agent import HarnessAgent, InitResult
 from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES
@@ -85,6 +86,7 @@ class TestInitWorkspaceInstanceMethod:
             agent._init_graph()
         loader = next(m for m in create.call_args.kwargs["middleware"] if type(m) is DeepAgentsMemoryMiddleware)
         assert loader.sources == create.call_args.kwargs["memory"]
+        assert loader.system_prompt == "<agent_memory>\n{agent_memory}\n</agent_memory>"
         loaded = loader.before_agent({}, MagicMock(), {})
         assert loaded is not None
         assert set(loaded["memory_contents"].values()) == {"working instructions", "user-owned strong memory"}
@@ -100,6 +102,20 @@ class TestInitWorkspaceInstanceMethod:
         loaded = loader.before_agent({}, MagicMock(), {})
         assert loaded is not None
         assert list(loaded["memory_contents"].values()) == ["user-owned strong memory"]
+
+    def test_memory_writes_stay_blocked_with_optional_guards_disabled(self, agent: HarnessAgent) -> None:
+        agent._config.tool_guard_enabled = False
+        agent._config.memory_enabled = False
+        with patch("deepagents.create_deep_agent", return_value=MagicMock()) as create:
+            agent._init_graph()
+        guard = next(m for m in create.call_args.kwargs["middleware"] if m.name == "FilesystemGuardMiddleware")
+        request = MagicMock(tool_call={"name": "edit_file", "args": {"file_path": "MEMORY.md"}, "id": "edit-1"})
+        handler = MagicMock()
+        result = guard.wrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "memory_save" in str(result.content)
+        handler.assert_not_called()
 
     def test_seeds_templates_via_backend(self, agent: HarnessAgent) -> None:
         result = agent.init_workspace()

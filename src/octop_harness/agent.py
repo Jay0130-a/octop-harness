@@ -46,7 +46,6 @@ from octop_harness.middleware.model_settings import ModelSettingsMiddleware
 from octop_harness.middleware.pii import detect_pii
 from octop_harness.middleware.session_header import SessionHeaderMiddleware
 from octop_harness.middleware.skill_filter import SkillFilterMiddleware, render_slash_skill_prompt
-from octop_harness.middleware.strong_memory import STRONG_MEMORY_PROMPT, StrongMemoryWriteGuard
 from octop_harness.middleware.tool_order import TaskToolLastMiddleware
 from octop_harness.middleware.tool_search import ToolSearchMiddleware
 from octop_harness.middleware.tools_filter import ToolsFilterMiddleware
@@ -1257,10 +1256,11 @@ class HarnessAgent:
             DeepAgentsMemoryMiddleware(
                 backend=self._backend,
                 sources=memory_paths,
-                system_prompt=STRONG_MEMORY_PROMPT,
+                # AGENTS.md owns memory policy. Suppress upstream's default
+                # edit_file learning instructions, keeping only the wrapper.
+                system_prompt="<agent_memory>\n{agent_memory}\n</agent_memory>",
                 add_cache_control=True,
             ),
-            StrongMemoryWriteGuard(self._workspace),
             *self._build_middleware(),
         ]
         if self._config.todos_enabled:
@@ -1485,6 +1485,7 @@ class HarnessAgent:
                 fs_permissions,
                 root_dir=root_dir,
                 workspace_dir=cfg.workspace_dir,
+                workspace=self._workspace,
             )
         )
 

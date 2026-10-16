@@ -19,8 +19,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from octop_memory import Memory, MemoryService
 
 from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES, BackendWorkspace
+from octop_harness.builtin.templates import iter_md_template_files
 from octop_harness.builtin.tools.memory_tools import build_memory_tools
-from octop_harness.middleware.strong_memory import STRONG_MEMORY_PROMPT, StrongMemoryWriteGuard
+from octop_harness.middleware.filesystem_guard import FilesystemGuardMiddleware
 
 
 class RecordingModel(FakeMessagesListChatModel):
@@ -43,7 +44,7 @@ def _loader(ws: BackendWorkspace, memory_files: Sequence[str] = DEFAULT_MEMORY_F
     return MemoryMiddleware(
         backend=ws.backend,
         sources=ws.memory_paths(memory_files, include_missing=True),
-        system_prompt=STRONG_MEMORY_PROMPT,
+        system_prompt="<agent_memory>\n{agent_memory}\n</agent_memory>",
         add_cache_control=True,
     )
 
@@ -94,15 +95,15 @@ async def test_empty_session_snapshot_stays_empty_until_a_new_session(tmp_path: 
     assert system is not None
     text = "\n".join(str(block.get("text", "")) for block in system.content_blocks if isinstance(block, dict))
     assert content.rstrip() in text
-    assert "memory_save" in str(system.content)
-    assert "Do not edit" in str(system.content)
+    assert "<memory_guidelines>" not in str(system.content)
+    assert "As you learn from your interactions" not in str(system.content)
 
 
 @pytest.mark.parametrize("tool_name", ["write_file", "edit_file", "append_file", "delete"])
 @pytest.mark.parametrize("path", ["MEMORY.md", "/MEMORY.md", "native"])
 def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, path: str) -> None:
     ws = _workspace(tmp_path, ".octop")
-    mw = StrongMemoryWriteGuard(ws)
+    mw = FilesystemGuardMiddleware(workspace=ws)
     if path == "native":
         path = ws.resolve_path("MEMORY.md")
     request = MagicMock(tool_call={"name": tool_name, "args": {"file_path": path}, "id": "call-1"})
@@ -116,7 +117,7 @@ def test_file_tools_cannot_change_strong_memory(tmp_path: Path, tool_name: str, 
 
 @pytest.mark.asyncio
 async def test_async_guard_allows_normal_workspace_edits(tmp_path: Path) -> None:
-    mw = StrongMemoryWriteGuard(_workspace(tmp_path))
+    mw = FilesystemGuardMiddleware(workspace=_workspace(tmp_path))
     request = MagicMock(tool_call={"name": "edit_file", "args": {"file_path": "notes.md"}, "id": "call-1"})
     calls: list[Any] = []
 
@@ -163,7 +164,7 @@ async def test_graph_blocks_strong_memory_edits_and_allows_normal_files(tmp_path
         model=model,
         backend=ws.backend,
         memory=loader.sources,
-        middleware=[loader, StrongMemoryWriteGuard(ws)],
+        middleware=[loader, FilesystemGuardMiddleware(workspace=ws)],
     )
     result = await graph.ainvoke({"messages": [HumanMessage(content="Edit both files")]})
     tools = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
@@ -182,6 +183,8 @@ async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreatio
     tmp_path: Path, async_mode: bool
 ) -> None:
     ws = _workspace(tmp_path)
+    agents = dict(iter_md_template_files("en"))["AGENTS.md"].decode("utf-8")
+    ws.write_text("AGENTS.md", agents, force=True)
     ws.write_text("MEMORY.md", "first manual agreement", force=True)
     memory = Memory(namespace="strong_test", backend_config={"db_path": str(tmp_path / "memory.sqlite")})
     service = MemoryService(memory)
@@ -214,7 +217,7 @@ async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreatio
             backend=ws.backend,
             tools=build_memory_tools(service),
             memory=loader.sources,
-            middleware=[loader, StrongMemoryWriteGuard(ws)],
+            middleware=[loader, FilesystemGuardMiddleware(workspace=ws)],
             checkpointer=checkpointer,
         )
 
@@ -230,6 +233,10 @@ async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreatio
     assert ws.read_text("MEMORY.md") == "first manual agreement"
     first_system = model.requests[-1][0].content
     assert str(first_system).count("<agent_memory>") == 1
+    first_text = "\n".join(
+        str(block.get("text", "")) for block in model.requests[-1][0].content_blocks if isinstance(block, dict)
+    )
+    assert agents.rstrip() in first_text
     ws.write_text("MEMORY.md", "second manual agreement", force=True)
     with patch.object(ws.backend, download, side_effect=AssertionError("no per-turn file read")):
         await invoke(graph, "Continue", config)
@@ -248,7 +255,7 @@ async def test_graph_preserves_session_snapshot_across_turns_and_graph_recreatio
     new_system = model.requests[-1][0].content
     assert "second manual agreement" in str(new_system)
     assert "first manual agreement" not in str(new_system)
-    assert "Do not edit" in str(new_system)
+    assert "Use `memory_save` for remember requests" in str(new_system)
     assert "As you learn from your interactions" not in str(new_system)
 
     ws.delete("MEMORY.md")

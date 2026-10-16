@@ -97,7 +97,7 @@
 
 #### 分层记忆
 - `MEMORY.md` 是用户手动维护的强记忆，每个会话首次加载全文快照，后续复用 checkpoint 中的快照；手动修改对新会话生效，即使结构化记忆关闭仍然生效。Agent 文件工具只读，宿主可提供手动编辑入口。
-- 工作区上下文的统一读取、session 快照、提示词格式和缓存断点复用 deepagents 原生 `MemoryMiddleware`；Harness 仅定制记忆提示词及 `MEMORY.md` 文件工具写保护。
+- 工作区上下文的统一读取、session 快照、提示词格式和缓存断点复用 deepagents 原生 `MemoryMiddleware`；记忆规则维护在工作区 `AGENTS.md`，`MEMORY.md` 写保护由现有文件系统防护执行。模板更新不覆盖已有用户文档，迁移时需更新 `AGENTS.md` 中旧的记忆写入规则。
 - 用户说「记住」时，Agent 使用 `memory_save(content, topic)` 直接保存到 octop-memory；`memory_search` / `memory_get` 用于补充历史召回。
 
 - 对话经采集策略过滤后记录为 **L0 原始事件**，再异步蒸馏为 **L2 原子**（`AtomCard`）与 **L3 实体页**。系统运行报错不进入记忆，正常排障经验和用户明确记忆请求仍可保存。
