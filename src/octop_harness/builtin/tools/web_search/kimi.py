@@ -93,12 +93,19 @@ async def kimi_search(query: str) -> str:
         # replayed, which appending the whole message preserves.
         messages.append(choice.message)
         for call in choice.message.tool_calls or []:
+            # The OpenAI types union function calls with custom-tool calls, and
+            # the latter carry no ``function``. Kimi's built-in ``$web_search``
+            # only ever produces function calls, so anything else is skipped
+            # rather than read through an attribute it does not have.
+            function = getattr(call, "function", None)
+            if function is None:
+                continue
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "name": call.function.name,
-                    "content": call.function.arguments or "{}",
+                    "name": function.name,
+                    "content": function.arguments or "{}",
                 },
             )
     return "Error: kimi_search exceeded the web-search round limit."
