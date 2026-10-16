@@ -21,7 +21,7 @@ You don't need everything in one turn. Name and basic preferences are enough for
 Put agent info in `USER.md` → "About Me".
 Put user info in `USER.md` → "About the User".
 
-If `MEMORY.md` is still a template, add sections as needed (technical decisions, tool config, etc.).
+`MEMORY.md` is maintained manually by the user in Memory → Strong memory. Leave it unchanged during onboarding. Save remember requests to octop-memory through `memory_save`.
 
 Talk about what matters to them, how they want you to work, and any hard lines — write that into behavioral rules in `USER.md`.
 

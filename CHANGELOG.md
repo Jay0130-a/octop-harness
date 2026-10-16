@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- 模型重试耗尽后抛出异常（`on_failure="error"`），由 checkpoint 与宿主记录失败；沿用上游默认重试判定、原重试次数与退避参数，不新增异常类型筛选。团队任务捕获 SDK 异常并释放任务锁；自动失败通知排除记忆采集。兼容旧版合成错误回复的来源标记与过滤。
+
+- 用户说「记住」时通过 `memory_save` 直接写入 octop-memory；`MEMORY.md` 改为用户手动维护的强记忆，每轮刷新全文，文件工具拒绝 Agent 修改。同步更新初始化模板及运行时提示，已有工作区无需被覆盖即可采用新规则。
+
 ## [1.0.3] - 2026-10-14
 
 ### 新增

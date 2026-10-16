@@ -15,7 +15,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 import deepagents
-from langchain.agents.middleware import ModelRetryMiddleware, PIIMiddleware
+from langchain.agents.middleware import PIIMiddleware
 
 from octop_harness.backends import resolve_backend, spec_supports_execution
 from octop_harness.backends.utils import DEFENSIVE_OP_ERRORS
@@ -39,6 +39,7 @@ from octop_harness.middleware.checkpoint_ts import CheckpointTsMiddleware
 from octop_harness.middleware.context_usage import ContextUsageMiddleware
 from octop_harness.middleware.mcp_tools import MCPToolMiddleware
 from octop_harness.middleware.media_offload import MediaOffloadMiddleware
+from octop_harness.middleware.model_retry import ModelRetryMiddleware
 from octop_harness.middleware.model_router import ModelRouterMiddleware
 from octop_harness.middleware.model_settings import ModelSettingsMiddleware
 from octop_harness.middleware.pii import detect_pii
@@ -47,6 +48,7 @@ from octop_harness.middleware.skill_filter import SkillFilterMiddleware, render_
 from octop_harness.middleware.tool_order import TaskToolLastMiddleware
 from octop_harness.middleware.tool_search import ToolSearchMiddleware
 from octop_harness.middleware.tools_filter import ToolsFilterMiddleware
+from octop_harness.middleware.workspace_memory import WorkspaceMemoryMiddleware
 from octop_harness.protocols import resolve_protocol
 from octop_harness.request import ChatRequest
 
@@ -1243,7 +1245,10 @@ class HarnessAgent:
         # so memory_paths() scans the workspace for standard files (AGENTS.md, MEMORY.md, …).
         memory_override = None if self._config.memory == () and self.is_bootstrapped() else self._config.memory
         tools = self._build_tools()
-        middleware = self._build_middleware()
+        middleware = [
+            WorkspaceMemoryMiddleware(self._workspace, memory_files=memory_override),
+            *self._build_middleware(),
+        ]
         if self._config.todos_enabled:
             from langchain.agents.middleware import TodoListMiddleware
 
@@ -1484,6 +1489,7 @@ class HarnessAgent:
                     max_retries=cfg.model_retry_max_retries,
                     initial_delay=cfg.model_retry_initial_delay,
                     max_delay=cfg.model_retry_max_delay,
+                    on_failure="error",
                 )
             )
 

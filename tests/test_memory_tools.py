@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 from octop_harness.builtin.tools.memory_tools import build_memory_tools
 
@@ -32,7 +33,30 @@ class _FakeService:
 class TestBuildMemoryTools:
     def test_returns_recall_tools(self) -> None:
         tools = build_memory_tools(_FakeService())  # type: ignore[arg-type]
-        assert {t.name for t in tools} == {"memory_search", "memory_get"}
+        assert {t.name for t in tools} == {"memory_search", "memory_get", "memory_save"}
+
+    def test_memory_save_writes_through_service(self) -> None:
+        service = _FakeService()
+        save = next(t for t in build_memory_tools(service) if t.name == "memory_save")
+
+        result = save.invoke({"content": "User prefers dark mode", "topic": "preferences"})
+
+        assert service.save_calls == [{"content": "User prefers dark mode", "topic": "preferences"}]
+        assert "saved" in result.lower()
+
+    def test_memory_save_rejects_empty_content(self) -> None:
+        service = _FakeService()
+        save = next(t for t in build_memory_tools(service) if t.name == "memory_save")
+
+        assert "empty" in save.invoke({"content": "  "}).lower()
+        assert service.save_calls == []
+
+    def test_memory_save_reports_failure_without_claiming_success(self) -> None:
+        service = _FakeService()
+        save = next(t for t in build_memory_tools(service) if t.name == "memory_save")
+        with patch.object(service, "save", side_effect=OSError("unavailable")):
+            result = save.invoke({"content": "Remember this project decision"})
+        assert result == "memory_save failed: OSError"
 
     def test_memory_search_formats_hits(self) -> None:
         service = _FakeService()

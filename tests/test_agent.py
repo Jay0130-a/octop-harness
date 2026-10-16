@@ -178,6 +178,11 @@ class TestConstruction:
         assert "MemoryMiddleware" in mw_classes
         # ModelRetry and PII (api-key redaction) are on by default.
         assert "ModelRetryMiddleware" in mw_classes
+        retry = next(m for m in captured["middleware"] if type(m).__name__ == "ModelRetryMiddleware")
+        assert retry.on_failure == "error"
+        from langchain.agents.middleware import ModelRetryMiddleware
+
+        assert retry.retry_on is ModelRetryMiddleware().retry_on
         assert "PIIMiddleware" in mw_classes
 
     def test_can_disable_model_retry_and_pii(

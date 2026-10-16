@@ -96,8 +96,11 @@
 
 
 #### 分层记忆
+- `MEMORY.md` 是用户手动维护的强记忆，每轮加载最新全文，即使结构化记忆关闭仍然生效；Agent 文件工具只读，宿主可提供手动编辑入口。
+- 用户说「记住」时，Agent 使用 `memory_save(content, topic)` 直接保存到 octop-memory；`memory_search` / `memory_get` 用于补充历史召回。
 
-- 每一轮对话先记录为 **L0 原始事件**，再异步蒸馏为 **L2 原子**（`AtomCard`）与 **L3 实体页**。
+- 对话经采集策略过滤后记录为 **L0 原始事件**，再异步蒸馏为 **L2 原子**（`AtomCard`）与 **L3 实体页**。系统运行报错不进入记忆，正常排障经验和用户明确记忆请求仍可保存。
+- 模型重试耗尽后抛出异常；重试范围沿用 LangChain 默认判断，次数与退避参数保持原配置。调用方需处理 `call()` / 流式调用的异常；checkpoint 保留失败任务，不添加合成助手回复。宿主单独展示错误；团队自动失败通知设置 `configurable.octop_memory_capture_exclude=true`，避免诊断信息被采集为记忆。
 - 由 octop-memory 中间件驱动，记忆随工作区一同迁移。
 
 

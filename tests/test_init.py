@@ -12,7 +12,8 @@ from octop_harness.agent import HarnessAgent, InitResult
 from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES
 from octop_harness.builtin.templates import iter_md_template_files
 from octop_harness.config import HarnessAgentConfig, ModelConfig, ProviderConfig
-from octop_harness.middleware.bootstrap import BOOTSTRAP_FILENAME
+from octop_harness.middleware.bootstrap import BOOTSTRAP_FILENAME, BOOTSTRAPPED_MARKER
+from octop_harness.middleware.workspace_memory import WorkspaceMemoryMiddleware
 
 # Expected templates in zh/ directory (SOUL.md is memory-only, not seeded by init).
 _EXPECTED_ZH_TEMPLATES = {
@@ -75,6 +76,18 @@ def agent(cfg: HarnessAgentConfig) -> HarnessAgent:
 
 
 class TestInitWorkspaceInstanceMethod:
+    def test_completed_bootstrap_restores_all_workspace_context(self, agent: HarnessAgent) -> None:
+        agent._config.memory = ()
+        agent.workspace.write_text("AGENTS.md", "working instructions", force=True)
+        agent.workspace.write_text("MEMORY.md", "user-owned strong memory", force=True)
+        agent.workspace.write_text(BOOTSTRAPPED_MARKER, "", force=True)
+        with patch("deepagents.create_deep_agent", return_value=MagicMock()) as create:
+            agent._init_graph()
+        loader = next(m for m in create.call_args.kwargs["middleware"] if isinstance(m, WorkspaceMemoryMiddleware))
+        loaded = loader.before_agent({}, MagicMock())
+        assert loaded is not None
+        assert set(loaded["memory_contents"].values()) == {"working instructions", "user-owned strong memory"}
+
     def test_seeds_templates_via_backend(self, agent: HarnessAgent) -> None:
         result = agent.init_workspace()
 

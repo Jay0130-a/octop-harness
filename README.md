@@ -80,7 +80,13 @@ octop-harness is a library (not an app) that turns deepagents into a deployable 
 - 17 user-editable provider presets, including Hunyuan, Kimi, GLM, DeepSeek, MiniMax, and Moonshot.
 
 #### Memory (tiered)
-- Each turn is captured as **L0 raw events**, then distilled asynchronously into **L2 atoms** (`AtomCard`s) and **L3 entity pages**.
+- `MEMORY.md` is user-maintained strong memory. Its full current content is loaded
+  at each agent invocation, even when structured memory is disabled. Agent file
+  tools cannot edit it. Hosts can expose a manual editor for this file.
+- Remember requests use `memory_save(content, topic)` to persist directly through
+  octop-memory; `memory_search` / `memory_get` retrieve additional history.
+- Eligible conversation content is captured as **L0 raw events**, then distilled asynchronously into **L2 atoms** (`AtomCard`s) and **L3 entity pages**. Runtime failures are excluded; normal troubleshooting knowledge and explicit remember requests remain eligible.
+- Model failures raise after retries; retry eligibility follows LangChain's defaults, with the existing retry budget and backoff settings. Callers must handle exceptions from `call()` / streaming. Checkpoints retain failed tasks without adding a synthetic assistant reply. Hosts display errors separately; automatic team failure notifications use `configurable.octop_memory_capture_exclude=true` to keep diagnostics out of memory.
 - Powered by the octop-memory middleware; memory travels with the workspace.
 - Recall is frozen once per user turn and appended to the model-facing user message,
   keeping the system prompt stable. Checkpoints preserve recall snapshots for exact

@@ -350,7 +350,12 @@ class MemoryMiddleware(AgentMiddleware[Any, Any]):
 
             visible = _filter_visible_messages(new_messages, trigger_user=trigger_user)
 
-            if self._service is not None and self._capture_enabled and visible:
+            if (
+                self._service is not None
+                and self._capture_enabled
+                and visible
+                and configurable.get("octop_memory_capture_exclude") is not True
+            ):
                 if self._maintenance_blocks_io():
                     logger.info(
                         "memory.capture skip: maintenance %s",
@@ -1136,11 +1141,14 @@ def _filter_visible_messages(
     - ``ToolMessage`` (tool outputs).
     - Intermediate ``AIMessage`` instances that carry ``tool_calls`` or
       whose content is empty (no text was emitted).
+    - Runtime-generated failure replies marked ``octop_runtime_error``.
+      Their triggering user input is still captured; JSONL keeps diagnostics.
     """
     visible: list[BaseMessage] = []
     if trigger_user is not None and isinstance(trigger_user, HumanMessage):
         visible.append(trigger_user)
     final_ai: AIMessage | None = None
+    runtime_failure = False
     for msg in messages:
         if isinstance(msg, HumanMessage):
             visible.append(msg)
@@ -1150,13 +1158,14 @@ def _filter_visible_messages(
             if not tool_calls and has_text:
                 # Last write wins — if a turn somehow produces multiple
                 # tool_call-free AIMessages (rare), keep the latest.
-                final_ai = msg
+                runtime_failure = msg.response_metadata.get("octop_runtime_error") is True
+                final_ai = None if runtime_failure else msg
         # ToolMessage and tool-call-only AIMessages are intentionally skipped.
     if final_ai is not None:
         visible.append(final_ai)
     # Edge case: ``trigger_user`` alone with no AI reply isn't a
     # user-visible exchange yet — drop it so we don't write a record.
-    if visible and (final_ai is None) and (trigger_user is not None) and len(visible) == 1:
+    if visible and final_ai is None and trigger_user is not None and len(visible) == 1 and not runtime_failure:
         return []
     return visible
 
