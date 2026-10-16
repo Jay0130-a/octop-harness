@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 新增
+
+- 插件系统支持 channel 类型及宿主拥有的通道注册元数据。
+
 ## [1.0.3] - 2026-10-14
 
 ### 新增
