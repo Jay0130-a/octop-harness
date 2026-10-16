@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- 依赖下限提高到 `octop-memory>=1.0.2`。手动文档核对与结构化运行错误隔离随该版本发布，本分支已调用这些接口。
+
 - `USER.md` 与 `MEMORY.md` 均由用户手动维护，文件工具禁止 Agent 写入；首次引导只引导用户填写档案，不再写 USER.md。两份文档复用统一的会话快照。记忆写入/晋升后与当前手动文档核对，召回按实际会话快照过滤重复，明确冲突以手动文档为准并转候选审核，提示用户。
 
 - 模型重试耗尽后抛出异常（`on_failure="error"`），由 checkpoint 与宿主记录失败；沿用上游默认重试判定、原重试次数与退避参数，不新增异常类型筛选。团队任务捕获 SDK 异常并释放任务锁；自动失败通知排除记忆采集。兼容旧版合成错误回复的来源标记与过滤。
